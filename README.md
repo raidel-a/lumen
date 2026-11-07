@@ -10,8 +10,11 @@ LG ULTRAWIDE
   ────────────────────────
   Switch input (DDC, if supported)
   DisplayPort 1 / HDMI 1 / HDMI 2 / LG alt variants
-  Brightness 75%   25% 50% 75% 100%
-  Contrast 70% / Volume 85%
+  Controls
+  Brightness ────●──── 75%
+  Contrast   ──────●── 70%
+  Volume     ───────●─ 85%
+  Mute
 Settings…
 Refresh
 Quit Lumen
@@ -20,7 +23,7 @@ Quit Lumen
 ## Building
 
 ```sh
-cargo build --release          # seconds, 1.3 MB binary
+cargo build --release          # seconds, ~1 MB binary
 cargo run --bin lumen          # status item appears immediately
 ./scripts/bundle.sh            # builds dist/Lumen.app (LSUIElement, no Dock icon)
 open dist/Lumen.app
@@ -30,9 +33,11 @@ Requires macOS 14+ on Apple silicon. No accessibility, screen recording, or root
 
 ## How the app is put together
 
-- **Status item and menu**: `tray-icon`/`muda` create the `NSStatusItem` and native menu. A thread
-  receives menu events and hands them to the main run loop with `dispatch::Queue::main()`, so
-  every model change and AppKit call happens on the main thread.
+- **Status item and menu**: Lumen owns its `NSStatusItem` and `NSMenu` directly (no tray library).
+  The menu rebuilds itself in `menuNeedsUpdate:` each time it opens, and its control rows are
+  custom item views holding real `NSSlider`s, so brightness, contrast and volume can be dragged
+  right in the menu. Sliders sit in the display's own menu rather than a nested submenu, because
+  a second-level submenu opens off-screen when the status item is near the right edge.
 - **Settings window** (`src/bin/lumen/ui.rs`): plain AppKit views built with `objc2`, laid out with
   frames in a fixed 720x540 content area. One target class handles every control; `tag` values
   say which input row a button belongs to. The window is built on first open, rebuilt in place
@@ -57,9 +62,9 @@ on wake, so the menu stays correct without pressing Refresh.
 
 ## Display controls
 
-The Displays page has sliders for brightness, contrast and volume. Drags are coalesced into one
-DDC write every 150 ms and update the readout immediately; the menu's Control submenu offers the
-same values as 25/50/75/100 presets plus a mute toggle. The editor marks the input the display
+The Displays page has sliders for brightness, contrast and volume, and the display's menu holds
+the same sliders as menu item views plus a mute toggle. Drags are coalesced into one DDC write
+every 150 ms and update the readout immediately. The editor marks the input the display
 reports as active (VCP 0x60) or the one this app last switched to, and the settings window grows
 or shrinks to fit the input list.
 

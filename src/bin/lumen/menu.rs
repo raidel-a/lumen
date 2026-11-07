@@ -1,14 +1,6 @@
-//! The native menu, built from the model so it always matches the settings.
+//! Menu model: the ids menu items carry and the actions they mean.
 
-use crate::config::Protocol;
-use crate::engine::DisplayEntry;
-use crate::model::Model;
 use lumen::ddc::InputProtocol;
-use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-
-pub const REFRESH: &str = "refresh";
-pub const QUIT: &str = "quit";
-pub const SETTINGS: &str = "settings";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -24,162 +16,12 @@ pub enum Action {
     Reclaim { key: String },
 }
 
-/// Builds the whole menu.
-pub fn build(model: &Model) -> Menu {
-    let menu = Menu::new();
-
-    let headline = match &model.message {
-        Some(message) => message.clone(),
-        None if model.displays.is_empty() && model.released.is_empty() => {
-            "No DDC displays connected".to_string()
-        }
-        None => "Lumen".to_string(),
-    };
-    let _ = menu.append(&MenuItem::new(headline, false, None));
-    let _ = menu.append(&PredefinedMenuItem::separator());
-
-    for released in &model.released {
-        let _ = menu.append(&MenuItem::new(
-            format!("{} is on another input", released.name),
-            false,
-            None,
-        ));
-        let _ = menu.append(&MenuItem::with_id(
-            reclaim_id(released.key.clone()),
-            format!("Bring {} back", released.name),
-            true,
-            None,
-        ));
-    }
-
-    if !model.released.is_empty() && model.menu_displays().next().is_some() {
-        let _ = menu.append(&PredefinedMenuItem::separator());
-    }
-
-    for display in model.menu_displays() {
-        let _ = menu.append(&display_menu(model, display));
-    }
-
-    let _ = menu.append(&PredefinedMenuItem::separator());
-    let _ = menu.append(&MenuItem::with_id(SETTINGS, "Settings…", true, None));
-    let _ = menu.append(&MenuItem::with_id(REFRESH, "Refresh", true, None));
-    let _ = menu.append(&MenuItem::with_id(QUIT, "Quit Lumen", true, None));
-    menu
-}
-
-fn display_menu(model: &Model, display: &DisplayEntry) -> Submenu {
-    let submenu = Submenu::new(display.name.clone(), true);
-
-    if lumen::native::is_supported() {
-        let _ = submenu.append(&MenuItem::with_id(
-            release_id(display.key.clone()),
-            "Release to other input (auto-switch)",
-            true,
-            None,
-        ));
-        let _ = submenu.append(&PredefinedMenuItem::separator());
-    }
-
-    let inputs = model.config.enabled_inputs(&display.key);
-    if inputs.is_empty() {
-        let _ = submenu.append(&MenuItem::new("No inputs enabled", false, None));
-    } else {
-        let _ = submenu.append(&MenuItem::new("Switch input (DDC, if supported)", false, None));
-        for input in inputs {
-            let checked = model.is_current(display, input.value, input.protocol);
-            let item = CheckMenuItem::with_id(
-                switch_id(display.id, input.value, input.protocol),
-                format!("{} ({})", input.label, input.protocol.label()),
-                true,
-                checked,
-                None,
-            );
-            let _ = submenu.append(&item);
-        }
-    }
-
-    let controls = Submenu::new("Controls", true);
-    let mut any = false;
-
-    if model.config.show_brightness {
-        if let Some((value, max)) = display.brightness {
-            any = true;
-            let _ = controls.append(&MenuItem::new(
-                format!("Brightness {}", percent(value, max)),
-                false,
-                None,
-            ));
-            for (label, target) in presets() {
-                let value = max.saturating_mul(target) / 100;
-                let item = MenuItem::with_id(brightness_id(display.id, value), label, true, None);
-                let _ = controls.append(&item);
-            }
-        }
-    }
-
-    if let Some((value, max)) = display.contrast {
-        any = true;
-        let _ = controls.append(&PredefinedMenuItem::separator());
-        let _ = controls.append(&MenuItem::new(
-            format!("Contrast {}", percent(value, max)),
-            false,
-            None,
-        ));
-        for (label, target) in presets() {
-            let value = max.saturating_mul(target) / 100;
-            let _ = controls.append(&MenuItem::with_id(
-                contrast_id(display.id, value),
-                label,
-                true,
-                None,
-            ));
-        }
-    }
-
-    if let Some((value, max)) = display.volume {
-        any = true;
-        let _ = controls.append(&PredefinedMenuItem::separator());
-        let _ = controls.append(&MenuItem::new(
-            format!("Volume {}", percent(value, max)),
-            false,
-            None,
-        ));
-        for (label, target) in presets() {
-            let value = max.saturating_mul(target) / 100;
-            let _ = controls.append(&MenuItem::with_id(
-                volume_id(display.id, value),
-                label,
-                true,
-                None,
-            ));
-        }
-        if display.muted.is_some() {
-            let item = CheckMenuItem::with_id(
-                mute_id(display.id, !display.muted.unwrap_or(false)),
-                "Mute",
-                true,
-                display.muted.unwrap_or(false),
-                None,
-            );
-            let _ = controls.append(&item);
-        }
-    }
-
-    if any {
-        let _ = submenu.append(&PredefinedMenuItem::separator());
-        let _ = submenu.append(&controls);
-    }
-
-    submenu
-}
-
-fn presets() -> [(&'static str, u16); 4] {
-    [("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
-}
+pub const REFRESH: &str = "refresh";
+pub const QUIT: &str = "quit";
+pub const SETTINGS: &str = "settings";
 
 /// Turns a menu id back into the action it stands for.
-pub fn parse(id: &str) -> Option<Action> {
-    let raw = id;
+pub fn parse(raw: &str) -> Option<Action> {
     match raw {
         REFRESH => return Some(Action::Refresh),
         QUIT => return Some(Action::Quit),
@@ -227,41 +69,22 @@ pub fn parse(id: &str) -> Option<Action> {
     }
 }
 
-fn switch_id(display: u32, value: u16, protocol: Protocol) -> String {
+pub fn switch_id(display: u32, value: u16, protocol: InputProtocol) -> String {
     let protocol = match protocol {
-        Protocol::Standard => "std",
-        Protocol::LgAlt => "lg",
+        InputProtocol::Standard => "std",
+        InputProtocol::LgAlt => "lg",
     };
     format!("switch:{display}:{value}:{protocol}")
 }
 
-fn brightness_id(display: u32, value: u16) -> String {
-    format!("brightness:{display}:{value}")
-}
-
-fn contrast_id(display: u32, value: u16) -> String {
-    format!("contrast:{display}:{value}")
-}
-
-fn volume_id(display: u32, value: u16) -> String {
-    format!("volume:{display}:{value}")
-}
-
-fn mute_id(display: u32, muted: bool) -> String {
-    format!("mute:{display}:{}", u8::from(muted))
-}
-
-fn release_id(key: String) -> String {
+pub fn release_id(key: &str) -> String {
     format!("release|{key}")
 }
 
-fn reclaim_id(key: String) -> String {
+pub fn reclaim_id(key: &str) -> String {
     format!("reclaim|{key}")
 }
 
-fn percent(value: u16, max: u16) -> String {
-    if max == 0 {
-        return String::new();
-    }
-    format!("{}%", (value as u32 * 100 / max as u32))
+pub fn mute_id(display: u32, muted: bool) -> String {
+    format!("mute:{display}:{}", u8::from(muted))
 }
