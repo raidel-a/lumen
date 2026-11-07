@@ -114,6 +114,7 @@ pub struct Display {
     pub id: u32,
     pub name: String,
     pub manufacturer: String,
+    pub vendor: u32,
     pub model: u32,
     pub serial: u32,
     pub location: String,
@@ -128,6 +129,7 @@ impl fmt::Debug for Display {
             .field("id", &self.id)
             .field("name", &self.name)
             .field("manufacturer", &self.manufacturer)
+            .field("vendor", &self.vendor)
             .field("model", &self.model)
             .field("serial", &self.serial)
             .field("chip", &format_args!("0x{:02x}", self.chip))
@@ -186,6 +188,7 @@ impl Display {
             id,
             name: format!("Display {}", id),
             manufacturer: String::new(),
+            vendor: cg.vendor_number(),
             model: cg.model_number(),
             serial: cg.serial_number(),
             location,
@@ -199,6 +202,14 @@ impl Display {
         display.manufacturer =
             ffi::display_attribute_named(adapter, "ManufacturerID").unwrap_or_default();
         Some(display)
+    }
+
+    /// Stable identity for configuration: vendor, model and serial, falling back to the name.
+    pub fn identity_key(&self) -> String {
+        if self.serial == 0 && self.model == 0 {
+            return format!("name:{}", self.name);
+        }
+        format!("{:04x}:{:04x}:{:08x}", self.vendor, self.model, self.serial)
     }
 
     pub fn chip_address(&self) -> u32 {
