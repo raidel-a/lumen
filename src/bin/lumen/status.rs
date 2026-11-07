@@ -13,7 +13,7 @@ use objc2::runtime::ProtocolObject;
 use objc2::{msg_send, sel};
 use objc2_app_kit::{
     NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSTickMarkPosition,
     NSStatusItem, NSSlider, NSTextField, NSVariableStatusItemLength, NSView,
 };
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
@@ -119,7 +119,7 @@ fn slider_item(
     unsafe {
         let container = NSView::initWithFrame(
             mtm().alloc(),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(300.0, 28.0)),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(300.0, 32.0)),
         );
         let text = NSColor::labelColor();
         let secondary = NSColor::secondaryLabelColor();
@@ -129,17 +129,21 @@ fn slider_item(
             12.0,
             NSFontWeightMedium,
             &text,
-            NSRect::new(NSPoint::new(12.0, 6.0), NSSize::new(80.0, 16.0)),
+            NSRect::new(NSPoint::new(12.0, 9.0), NSSize::new(80.0, 16.0)),
         ));
 
         let slider = NSSlider::initWithFrame(
             mtm().alloc(),
-            NSRect::new(NSPoint::new(96.0, 3.0), NSSize::new(150.0, 22.0)),
+            NSRect::new(NSPoint::new(96.0, 6.0), NSSize::new(150.0, 22.0)),
         );
         slider.setMinValue(0.0);
         slider.setMaxValue(max.max(1) as f64);
         slider.setDoubleValue(value as f64);
         slider.setContinuous(true);
+        // Five snap points: 0, 25, 50, 75 and 100 percent of the range.
+        slider.setNumberOfTickMarks(5);
+        slider.setAllowsTickMarkValuesOnly(true);
+        slider.setTickMarkPosition(NSTickMarkPosition::Below);
         slider.setTag(((display.id as isize) << 8) | code as isize);
         slider.setTarget(Some(actions));
         slider.setAction(Some(sel!(menuControlChanged:)));
@@ -150,7 +154,7 @@ fn slider_item(
             11.0,
             NSFontWeightRegular,
             &secondary,
-            NSRect::new(NSPoint::new(252.0, 6.0), NSSize::new(44.0, 16.0)),
+            NSRect::new(NSPoint::new(252.0, 9.0), NSSize::new(44.0, 16.0)),
         );
         container.addSubview(&readout);
         LABELS.with(|labels| {
