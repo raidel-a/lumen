@@ -47,6 +47,13 @@ Requires macOS 14+ on Apple silicon. No accessibility, screen recording, or root
 
 Settings persist to `~/Library/Application Support/Lumen/config.json`: behaviour switches plus
 each display's menu input list (label, VCP value, standard vs LG-alt addressing, enabled).
+Released displays are also recorded there, so a crash cannot leave an output switched off: the
+next launch reclaims them before doing anything else.
+
+Launch at login uses `SMAppService` (macOS 13+). It accepts the ad-hoc signed bundle and shows up
+under System Settings > General > Login Items; the switch reflects the live registration status,
+including the "needs approval" case. The app also rescans after display configuration changes and
+on wake, so the menu stays correct without pressing Refresh.
 
 ## Memory
 

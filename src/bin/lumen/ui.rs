@@ -38,6 +38,7 @@ pub struct Ui {
     pub draft_label: Option<Retained<NSTextField>>,
     pub draft_value: Option<Retained<NSTextField>>,
     pub draft_protocol: Protocol,
+    pub login_note: Option<String>,
 }
 
 impl Default for Ui {
@@ -49,6 +50,7 @@ impl Default for Ui {
             draft_label: None,
             draft_value: None,
             draft_protocol: Protocol::LgAlt,
+            login_note: None,
         }
     }
 }
@@ -260,15 +262,45 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
         let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
         let right = card(theme, parent, rect, rows[1].0, rows[1].1);
         switch(rows[1].2, parent, NSRect::new(NSPoint::new(right - 38.0, HEIGHT - y - 32.0), NSSize::new(38.0, 22.0)), rows[1].3);
+        y += 72.0;
+
+        let status = crate::login::status();
+        let (detail, on) = match status {
+            crate::login::Status::Enabled => ("Starts Lumen when you log in.", true),
+            crate::login::Status::RequiresApproval => (
+                "Approve Lumen in System Settings > General > Login Items.",
+                true,
+            ),
+            crate::login::Status::NotFound => ("macOS could not find this app's login item.", false),
+            crate::login::Status::Unavailable => ("Login items need macOS 13 or later.", false),
+            _ => ("Starts Lumen when you log in.", false),
+        };
+        let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
+        let right = card(theme, parent, rect, "Launch at login", detail);
+        switch(
+            on,
+            parent,
+            NSRect::new(NSPoint::new(right - 38.0, HEIGHT - y - 32.0), NSSize::new(38.0, 22.0)),
+            sel!(toggleLoginItem:),
+        );
+        if let Some(note) = &UI.with(|ui| ui.borrow().login_note.clone()) {
+            parent.addSubview(&label(
+                note,
+                11.0,
+                NSFontWeightRegular,
+                &theme.secondary,
+                frame(HEIGHT, PAD + 16.0, y + 66.0, WIDTH - PAD * 2.0 - 32.0, 16.0),
+            ));
+        }
 
         parent.addSubview(&label(
             "ABOUT",
             11.0,
             NSFontWeightSemibold,
             &theme.secondary,
-            frame(HEIGHT, PAD, 312.0, 200.0, 14.0),
+            frame(HEIGHT, PAD, 392.0, 200.0, 14.0),
         ));
-        let about = frame(HEIGHT, PAD, 332.0, WIDTH - PAD * 2.0, 64.0);
+        let about = frame(HEIGHT, PAD, 412.0, WIDTH - PAD * 2.0, 64.0);
         let _ = card(theme, parent, about, "", "");
         parent.addSubview(&paragraph(
             "Lumen switches inputs over DDC. When a monitor's firmware ignores input select, Release \
@@ -592,6 +624,26 @@ declare_class!(
         fn page_changed(&self, sender: *mut AnyObject) {
             let segment: isize = unsafe { msg_send![sender, selectedSegment] };
             UI.with(|ui| ui.borrow_mut().page = if segment == 1 { Page::Displays } else { Page::General });
+            crate::after_change();
+        }
+
+        #[method(toggleLoginItem:)]
+        fn toggle_login_item(&self, _sender: *mut AnyObject) {
+            let before = crate::login::status();
+            let result = match before {
+                crate::login::Status::Enabled => crate::login::unregister(),
+                crate::login::Status::RequiresApproval => {
+                    crate::login::open_login_items();
+                    Ok(())
+                }
+                _ => crate::login::register(),
+            };
+            if std::env::var_os("LUMEN_TRACE").is_some() {
+                eprintln!("login item: before={before:?} result={result:?} after={:?}", crate::login::status());
+            }
+            UI.with(|ui| {
+                ui.borrow_mut().login_note = result.err();
+            });
             crate::after_change();
         }
 
