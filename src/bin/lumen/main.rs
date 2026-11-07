@@ -3,6 +3,7 @@
 mod config;
 mod engine;
 mod icon;
+mod login;
 mod menu;
 mod model;
 mod ui;
@@ -202,10 +203,44 @@ fn handle_menu(id: &str) {
 }
 
 fn main() {
+    if let Some(command) = std::env::args().nth(1) {
+        match command.as_str() {
+            "--login-status" => {
+                println!("{:?}", login::status());
+                return;
+            }
+            "--login-register" => {
+                println!("register: {:?}", login::register());
+                println!("status: {:?}", login::status());
+                return;
+            }
+            "--login-unregister" => {
+                println!("unregister: {:?}", login::unregister());
+                println!("status: {:?}", login::status());
+                return;
+            }
+            _ => {}
+        }
+    }
+
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    if std::env::var_os("LUMEN_TRACE").is_some() {
+        unsafe {
+            let bundle = objc2_foundation::NSBundle::mainBundle();
+            eprintln!(
+                "bundle id: {:?} path: {:?}",
+                bundle.bundleIdentifier().map(|s| s.to_string()),
+                bundle.bundlePath().to_string()
+            );
+
+        }
+    }
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     unsafe { app.finishLaunching() };
+    if std::env::var_os("LUMEN_TRACE").is_some() {
+        eprintln!("login item at startup: {:?}", login::status());
+    }
 
     with_model(|model| model.config = config::Config::load());
 
