@@ -1,8 +1,11 @@
 //! Display operations. Everything here touches hardware, so it runs on worker threads.
 
 use lumen::ddc::{
-    DataAddress, Display, InputCode, InputProtocol, VCP_BRIGHTNESS, VCP_CONTRAST, VCP_VOLUME,
+    DataAddress, Display, InputCode, InputProtocol, VCP_BRIGHTNESS, VCP_CONTRAST,
+    VCP_INPUT_SOURCE, VCP_VOLUME,
 };
+
+pub const VCP_MUTE: u8 = 0x8D;
 use std::time::Duration;
 
 #[derive(Clone, Debug)]
@@ -15,6 +18,9 @@ pub struct DisplayEntry {
     pub brightness: Option<(u16, u16)>,
     pub contrast: Option<(u16, u16)>,
     pub volume: Option<(u16, u16)>,
+    pub muted: Option<bool>,
+    /// What the monitor reports for VCP 0x60, when the firmware returns something valid.
+    pub current_input: Option<u16>,
 }
 
 /// Reads every DDC display and its advertised inputs.
@@ -25,6 +31,20 @@ pub fn scan() -> Vec<DisplayEntry> {
         let brightness = display.read_vcp(VCP_BRIGHTNESS).ok().map(|v| (v.value, v.max));
         let contrast = display.read_vcp(VCP_CONTRAST).ok().map(|v| (v.value, v.max));
         let volume = display.read_vcp(VCP_VOLUME).ok().map(|v| (v.value, v.max));
+        let muted = display
+            .read_vcp(VCP_MUTE)
+            .ok()
+            .map(|v| match v.value {
+                1 => true,
+                2 => false,
+                _ => false,
+            });
+        // Several LG firmwares answer 0 here regardless of the input; treat that as unknown.
+        let current_input = display
+            .read_vcp(VCP_INPUT_SOURCE)
+            .ok()
+            .map(|v| v.value)
+            .filter(|value| *value > 0);
         displays.push(DisplayEntry {
             id: display.id,
             key: display.identity_key(),
@@ -33,6 +53,8 @@ pub fn scan() -> Vec<DisplayEntry> {
             brightness,
             contrast,
             volume,
+            muted,
+            current_input,
         });
     }
     displays
@@ -112,20 +134,28 @@ pub fn reclaim(display_id: u32, name: &str) -> String {
 
 /// Sends a raw VCP write, used by the brightness quick actions.
 pub fn write_vcp(display_id: u32, code: u8, value: u16) -> String {
-    let Some(mut display) = Display::find(display_id) else {
-        return "Display is not connected".to_string();
-    };
-    match display.write_vcp_with(code, value, DataAddress::Host) {
+    match write_vcp_quiet(display_id, code, value) {
         Ok(()) => format!("{} set to {value}", control_name(code)),
         Err(error) => format!("{}: {error}", control_name(code)),
     }
 }
 
-fn control_name(code: u8) -> &'static str {
+/// The same write without building a user-facing message, for slider streams.
+pub fn write_vcp_quiet(display_id: u32, code: u8, value: u16) -> Result<(), String> {
+    let Some(mut display) = Display::find(display_id) else {
+        return Err("display is not connected".into());
+    };
+    display
+        .write_vcp_with(code, value, DataAddress::Host)
+        .map_err(|error| error.to_string())
+}
+
+pub fn control_name(code: u8) -> &'static str {
     match code {
         VCP_BRIGHTNESS => "Brightness",
         VCP_CONTRAST => "Contrast",
         VCP_VOLUME => "Volume",
+        VCP_MUTE => "Mute",
         _ => "Control",
     }
 }

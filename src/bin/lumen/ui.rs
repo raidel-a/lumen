@@ -12,7 +12,8 @@ use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControl,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSApplicationDidChangeScreenParametersNotification, NSSwitch, NSTextField, NSTitlePosition,
+    NSApplicationDidChangeScreenParametersNotification, NSSlider, NSSwitch, NSTextField,
+    NSTitlePosition,
     NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
@@ -22,8 +23,12 @@ use objc2_foundation::{
 use std::cell::RefCell;
 
 const WIDTH: f64 = 720.0;
-const HEIGHT: f64 = 540.0;
 const PAD: f64 = 24.0;
+
+thread_local! {
+    /// Content height being laid out; `frame` measures from this top edge.
+    static CONTENT_HEIGHT: std::cell::Cell<f64> = const { std::cell::Cell::new(540.0) };
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -39,6 +44,9 @@ pub struct Ui {
     pub draft_value: Option<Retained<NSTextField>>,
     pub draft_protocol: Protocol,
     pub login_note: Option<String>,
+    pub brightness_value: Option<Retained<NSTextField>>,
+    pub contrast_value: Option<Retained<NSTextField>>,
+    pub volume_value: Option<Retained<NSTextField>>,
 }
 
 impl Default for Ui {
@@ -51,6 +59,9 @@ impl Default for Ui {
             draft_value: None,
             draft_protocol: Protocol::LgAlt,
             login_note: None,
+            brightness_value: None,
+            contrast_value: None,
+            volume_value: None,
         }
     }
 }
@@ -86,8 +97,11 @@ impl Theme {
     }
 }
 
-fn frame(top: f64, x: f64, y: f64, w: f64, h: f64) -> NSRect {
-    NSRect::new(NSPoint::new(x, top - y - h), NSSize::new(w, h))
+fn frame(x: f64, y: f64, w: f64, h: f64) -> NSRect {
+    NSRect::new(
+        NSPoint::new(x, CONTENT_HEIGHT.with(|cell| cell.get()) - y - h),
+        NSSize::new(w, h),
+    )
 }
 
 fn label(text: &str, size: f64, weight: f64, color: &NSColor, rect: NSRect) -> Retained<NSTextField> {
@@ -206,6 +220,45 @@ fn card(theme: &Theme, parent: &NSView, rect: NSRect, title: &str, detail: &str)
     }
 }
 
+fn percent_of(value: u16, max: u16) -> u32 {
+    if max == 0 {
+        return 0;
+    }
+    value as u32 * 100 / max as u32
+}
+
+/// One labelled slider plus its value readout.
+fn control_row(
+    parent: &NSView,
+    theme: &Theme,
+    y: f64,
+    title: &str,
+    value: u16,
+    max: u16,
+    tag_value: isize,
+) -> Retained<NSTextField> {
+    unsafe {
+        parent.addSubview(&label(title, 12.0, NSFontWeightMedium, &theme.text, frame(230.0, y, 84.0, 18.0)));
+        let slider = NSSlider::initWithFrame(mtm().alloc(), frame(318.0, y - 3.0, 240.0, 22.0));
+        slider.setMinValue(0.0);
+        slider.setMaxValue(max.max(1) as f64);
+        slider.setDoubleValue(value as f64);
+        slider.setContinuous(true);
+        slider.setTag(tag_value);
+        wire(&slider, sel!(controlChanged:));
+        parent.addSubview(&slider);
+
+        let text = label(
+            &format!("{}%", percent_of(value, max)),
+            11.0,
+            NSFontWeightRegular,
+            &theme.secondary,
+            frame(566.0, y, 60.0, 16.0),
+        );
+        parent.addSubview(&text);
+        text
+    }
+}
 fn display_key(model: &Model, index: usize) -> Option<String> {
     model.displays.get(index).map(|display| display.key.clone())
 }
@@ -221,7 +274,7 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
             11.0,
             NSFontWeightSemibold,
             &theme.secondary,
-            frame(HEIGHT, PAD, 64.0, 200.0, 14.0),
+            frame(PAD, 64.0, 200.0, 14.0),
         ));
 
         let rows = [
@@ -239,18 +292,18 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
             ),
         ];
         let mut y = 86.0;
-        let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
+        let rect = frame(PAD, y, WIDTH - PAD * 2.0, 64.0);
         let right = card(theme, parent, rect, rows[0].0, rows[0].1);
-        switch(rows[0].2, parent, NSRect::new(NSPoint::new(right - 38.0, HEIGHT - y - 32.0), NSSize::new(38.0, 22.0)), rows[0].3);
+        switch(rows[0].2, parent, frame(right - 38.0, y + 10.0, 38.0, 22.0), rows[0].3);
         y += 72.0;
 
-        let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
+        let rect = frame(PAD, y, WIDTH - PAD * 2.0, 64.0);
         let right = card(theme, parent, rect, "Auto-reclaim", "Bring a released display back by itself after a while.");
         let current = model.config.auto_reclaim_minutes;
         let options = [None, Some(1u32), Some(5), Some(15)];
         let mut x = right - 4.0 * 58.0;
         for (index, (text, value)) in ["Off", "1 min", "5 min", "15 min"].iter().zip(options).enumerate() {
-            let b = button(text, parent, frame(HEIGHT, x, y + 24.0, 54.0, 24.0), true, sel!(autoReclaim:));
+            let b = button(text, parent, frame(x, y + 24.0, 54.0, 24.0), true, sel!(autoReclaim:));
             tag(&b, index as isize);
             if current == value {
                 b.setState(NSControlStateValueOn);
@@ -259,9 +312,9 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
         }
         y += 72.0;
 
-        let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
+        let rect = frame(PAD, y, WIDTH - PAD * 2.0, 64.0);
         let right = card(theme, parent, rect, rows[1].0, rows[1].1);
-        switch(rows[1].2, parent, NSRect::new(NSPoint::new(right - 38.0, HEIGHT - y - 32.0), NSSize::new(38.0, 22.0)), rows[1].3);
+        switch(rows[1].2, parent, frame(right - 38.0, y + 10.0, 38.0, 22.0), rows[1].3);
         y += 72.0;
 
         let status = crate::login::status();
@@ -275,12 +328,12 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
             crate::login::Status::Unavailable => ("Login items need macOS 13 or later.", false),
             _ => ("Starts Lumen when you log in.", false),
         };
-        let rect = frame(HEIGHT, PAD, y, WIDTH - PAD * 2.0, 64.0);
+        let rect = frame(PAD, y, WIDTH - PAD * 2.0, 64.0);
         let right = card(theme, parent, rect, "Launch at login", detail);
         switch(
             on,
             parent,
-            NSRect::new(NSPoint::new(right - 38.0, HEIGHT - y - 32.0), NSSize::new(38.0, 22.0)),
+            frame(right - 38.0, y + 10.0, 38.0, 22.0),
             sel!(toggleLoginItem:),
         );
         if let Some(note) = &UI.with(|ui| ui.borrow().login_note.clone()) {
@@ -289,7 +342,7 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
                 11.0,
                 NSFontWeightRegular,
                 &theme.secondary,
-                frame(HEIGHT, PAD + 16.0, y + 66.0, WIDTH - PAD * 2.0 - 32.0, 16.0),
+                frame(PAD + 16.0, y + 66.0, WIDTH - PAD * 2.0 - 32.0, 16.0),
             ));
         }
 
@@ -298,9 +351,9 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
             11.0,
             NSFontWeightSemibold,
             &theme.secondary,
-            frame(HEIGHT, PAD, 392.0, 200.0, 14.0),
+            frame(PAD, 392.0, 200.0, 14.0),
         ));
-        let about = frame(HEIGHT, PAD, 412.0, WIDTH - PAD * 2.0, 64.0);
+        let about = frame(PAD, 412.0, WIDTH - PAD * 2.0, 64.0);
         let _ = card(theme, parent, about, "", "");
         parent.addSubview(&paragraph(
             "Lumen switches inputs over DDC. When a monitor's firmware ignores input select, Release \
@@ -319,7 +372,7 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
     unsafe {
         let mut y = 64.0;
         for (index, display) in model.displays.iter().enumerate() {
-            let b = button(&display.name, parent, frame(HEIGHT, PAD, y, 182.0, 30.0), true, sel!(selectDisplay:));
+            let b = button(&display.name, parent, frame(PAD, y, 182.0, 30.0), true, sel!(selectDisplay:));
             tag(&b, index as isize);
             if index == selected {
                 b.setState(NSControlStateValueOn);
@@ -327,7 +380,7 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
             y += 36.0;
         }
         if model.displays.is_empty() {
-            parent.addSubview(&label("No DDC displays", 12.0, NSFontWeightRegular, &theme.secondary, frame(HEIGHT, PAD, y, 182.0, 16.0)));
+            parent.addSubview(&label("No DDC displays", 12.0, NSFontWeightRegular, &theme.secondary, frame(PAD, y, 182.0, 16.0)));
         }
 
         let Some(display) = model.displays.get(selected) else {
@@ -336,7 +389,7 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
                 13.0,
                 NSFontWeightRegular,
                 &theme.secondary,
-                frame(HEIGHT, 230.0, 64.0, 400.0, 18.0),
+                frame(230.0, 64.0, 400.0, 18.0),
             ));
             return;
         };
@@ -347,25 +400,51 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
         let inputs = model.config.display(&key).map(|c| c.inputs.clone()).unwrap_or_default();
 
         let mut y = 64.0;
-        parent.addSubview(&label(&display.name, 15.0, NSFontWeightSemibold, &theme.text, frame(HEIGHT, 230.0, y, 300.0, 20.0)));
+        parent.addSubview(&label(&display.name, 15.0, NSFontWeightSemibold, &theme.text, frame(230.0, y, 300.0, 20.0)));
         let sw = switch(
             show_in_menu,
             parent,
-            NSRect::new(NSPoint::new(WIDTH - PAD - 38.0, HEIGHT - y - 4.0), NSSize::new(38.0, 22.0)),
+            frame(WIDTH - PAD - 38.0, y + 4.0, 38.0, 22.0),
             sel!(toggleShowInMenu:),
         );
         let _ = sw;
 
         y += 26.0;
         let status = if released { "released" } else { "connected" };
-        parent.addSubview(&mono(&format!("{key}  ·  {status}"), 11.0, &theme.secondary, frame(HEIGHT, 230.0, y, 460.0, 16.0)));
+        parent.addSubview(&mono(&format!("{key}  ·  {status}"), 11.0, &theme.secondary, frame(230.0, y, 460.0, 16.0)));
 
         y += 26.0;
-        parent.addSubview(&label("MENU INPUTS", 11.0, NSFontWeightSemibold, &theme.secondary, frame(HEIGHT, 230.0, y, 200.0, 14.0)));
+        parent.addSubview(&label("CONTROLS", 11.0, NSFontWeightSemibold, &theme.secondary, frame(230.0, y, 200.0, 14.0)));
+        y += 16.0;
+
+        UI.with(|ui| {
+            let mut ui = ui.borrow_mut();
+            ui.brightness_value = None;
+            ui.contrast_value = None;
+            ui.volume_value = None;
+        });
+        if let Some((value, max)) = display.brightness {
+            let text = control_row(parent, theme, y, "Brightness", value, max, 1);
+            UI.with(|ui| ui.borrow_mut().brightness_value = Some(text));
+            y += 28.0;
+        }
+        if let Some((value, max)) = display.contrast {
+            let text = control_row(parent, theme, y, "Contrast", value, max, 2);
+            UI.with(|ui| ui.borrow_mut().contrast_value = Some(text));
+            y += 28.0;
+        }
+        if let Some((value, max)) = display.volume {
+            let text = control_row(parent, theme, y, "Volume", value, max, 3);
+            UI.with(|ui| ui.borrow_mut().volume_value = Some(text));
+            y += 28.0;
+        }
+
+        y += 8.0;
+        parent.addSubview(&label("MENU INPUTS", 11.0, NSFontWeightSemibold, &theme.secondary, frame(230.0, y, 200.0, 14.0)));
         y += 22.0;
 
         for (index, input) in inputs.iter().enumerate() {
-            let row = frame(HEIGHT, 230.0, y, WIDTH - 230.0 - PAD, 34.0);
+            let row = frame(230.0, y, WIDTH - 230.0 - PAD, 34.0);
             let bx = NSBox::initWithFrame(mtm().alloc(), row);
             bx.setBoxType(NSBoxType::NSBoxCustom);
             bx.setTitlePosition(NSTitlePosition::NSNoTitle);
@@ -421,28 +500,28 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
             ui.draft_label = None;
             ui.draft_value = None;
         });
-        let lf = NSTextField::initWithFrame(mtm().alloc(), frame(HEIGHT, 230.0, add_y, 140.0, 28.0));
+        let lf = NSTextField::initWithFrame(mtm().alloc(), frame(230.0, add_y, 140.0, 28.0));
         lf.setPlaceholderString(Some(&NSString::from_str("Label")));
         parent.addSubview(&lf);
-        let vf = NSTextField::initWithFrame(mtm().alloc(), frame(HEIGHT, 378.0, add_y, 80.0, 28.0));
+        let vf = NSTextField::initWithFrame(mtm().alloc(), frame(378.0, add_y, 80.0, 28.0));
         vf.setPlaceholderString(Some(&NSString::from_str("0x00")));
         parent.addSubview(&vf);
         let protocol = UI.with(|ui| ui.borrow().draft_protocol);
-        let _ = button(protocol.label(), parent, frame(HEIGHT, 466.0, add_y, 64.0, 28.0), true, sel!(cycleDraftProtocol:));
-        let _ = button("Add", parent, frame(HEIGHT, 538.0, add_y, 64.0, 28.0), true, sel!(addInput:));
+        let _ = button(protocol.label(), parent, frame(466.0, add_y, 64.0, 28.0), true, sel!(cycleDraftProtocol:));
+        let _ = button("Add", parent, frame(538.0, add_y, 64.0, 28.0), true, sel!(addInput:));
         UI.with(|ui| {
             let mut ui = ui.borrow_mut();
             ui.draft_label = Some(lf);
             ui.draft_value = Some(vf);
         });
 
-        let _ = button("Reset to detected", parent, frame(HEIGHT, 230.0, add_y + 38.0, 150.0, 28.0), true, sel!(resetInputs:));
+        let _ = button("Reset to detected", parent, frame(230.0, add_y + 38.0, 150.0, 28.0), true, sel!(resetInputs:));
         parent.addSubview(&label(
             "Changes apply to the menu immediately.",
             12.0,
             NSFontWeightRegular,
             &theme.secondary,
-            frame(HEIGHT, 392.0, add_y + 42.0, 240.0, 18.0),
+            frame(392.0, add_y + 42.0, 240.0, 18.0),
         ));
     }
 }
@@ -457,19 +536,55 @@ fn clear(view: &NSView) {
 
 fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) {
     let theme = Theme::new();
+
+    let height = match page {
+        Page::General => 540.0,
+        Page::Displays => {
+            let display = model.displays.get(selected);
+            let controls = display
+                .map(|display| {
+                    [display.brightness.is_some(), display.contrast.is_some(), display.volume.is_some()]
+                        .iter()
+                        .filter(|present| **present)
+                        .count()
+                })
+                .unwrap_or(0);
+            let inputs = display
+                .and_then(|display| model.config.display(&display.key))
+                .map(|config| config.inputs.len())
+                .unwrap_or(0);
+            (162.0 + controls as f64 * 28.0 + inputs as f64 * 40.0 + 86.0).clamp(520.0, 900.0)
+        }
+    };
+    let previous = CONTENT_HEIGHT.with(|cell| cell.get());
+    CONTENT_HEIGHT.with(|cell| cell.set(height));
+    if (height - previous).abs() > 0.5 {
+        {
+            let frame = window.frame();
+            let delta = height - previous;
+            window.setFrame_display(
+                NSRect::new(
+                    NSPoint::new(frame.origin.x, frame.origin.y - delta),
+                    NSSize::new(frame.size.width, frame.size.height + delta),
+                ),
+                true,
+            );
+        }
+    }
+
     unsafe {
         let Some(content) = window.contentView() else {
             return;
         };
         clear(&content);
 
-        content.addSubview(&label("Lumen", 16.0, NSFontWeightSemibold, &theme.text, frame(HEIGHT, PAD, 14.0, 70.0, 22.0)));
+        content.addSubview(&label("Lumen", 16.0, NSFontWeightSemibold, &theme.text, frame(PAD, 14.0, 70.0, 22.0)));
         content.addSubview(&label(
             "Menu bar display control",
             13.0,
             NSFontWeightRegular,
             &theme.secondary,
-            frame(HEIGHT, PAD + 76.0, 16.0, 260.0, 18.0),
+            frame(PAD + 76.0, 16.0, 260.0, 18.0),
         ));
 
         let labels = NSArray::from_id_slice(&[
@@ -483,7 +598,7 @@ fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) 
             None,
             mtm(),
         );
-        tabs.setFrame(frame(HEIGHT, WIDTH - PAD - 156.0, 12.0, 156.0, 26.0));
+        tabs.setFrame(frame(WIDTH - PAD - 156.0, 12.0, 156.0, 26.0));
         tabs.setSelectedSegment(if page == Page::General { 0 } else { 1 });
         wire(&tabs, sel!(pageChanged:));
         content.addSubview(&tabs);
@@ -572,7 +687,7 @@ fn create_window() -> Retained<NSWindow> {
     unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
             mtm().alloc(),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, HEIGHT)),
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, 540.0)),
             NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable,
             NSBackingStoreType::NSBackingStoreBuffered,
             false,
@@ -610,6 +725,53 @@ declare_class!(
     unsafe impl NSObjectProtocol for Actions {}
 
     unsafe impl Actions {
+        #[method(controlChanged:)]
+        fn control_changed(&self, sender: *mut AnyObject) {
+            let tag = sender_tag(sender);
+            let raw: f64 = unsafe { msg_send![sender, doubleValue] };
+            let value = raw.max(0.0).round() as u16;
+            let code = match tag {
+                2 => 0x12u8,
+                3 => 0x62,
+                _ => 0x10,
+            };
+            let selected = UI.with(|ui| ui.borrow().selected);
+            let Some(display_id) =
+                crate::with_model(|model| model.displays.get(selected).map(|display| display.id))
+            else {
+                return;
+            };
+            let max = crate::with_model(|model| {
+                model.displays.get(selected).and_then(|display| match code {
+                    0x10 => display.brightness,
+                    0x12 => display.contrast,
+                    _ => display.volume,
+                })
+            })
+            .map(|(_, max)| max)
+            .unwrap_or(100);
+
+            UI.with(|ui| {
+                let ui = ui.borrow();
+                let target = match tag {
+                    2 => ui.contrast_value.clone(),
+                    3 => ui.volume_value.clone(),
+                    _ => ui.brightness_value.clone(),
+                };
+                if let Some(text) = target {
+                    unsafe {
+                        text.setStringValue(&NSString::from_str(&format!(
+                            "{}%",
+                            percent_of(value, max)
+                        )))
+                    };
+                }
+            });
+
+            crate::with_model(|model| model.apply_control(display_id, code, value));
+            crate::queue_control(display_id, code, value);
+        }
+
         #[method(screensChanged:)]
         fn screens_changed(&self, _notification: *mut AnyObject) {
             crate::schedule_rescan();

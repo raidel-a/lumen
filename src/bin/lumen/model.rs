@@ -1,6 +1,7 @@
 //! The app's model: what the menu and the settings window read.
 
-use crate::config::{Config, ReleasedRecord};
+use crate::config::{Config, Protocol, ReleasedRecord};
+use std::collections::HashMap;
 use crate::engine::DisplayEntry;
 
 #[derive(Clone, Debug)]
@@ -16,6 +17,8 @@ pub struct Model {
     pub released: Vec<Released>,
     pub message: Option<String>,
     pub config: Config,
+    /// The input this app last switched each display to, keyed by display identity.
+    pub last_input: HashMap<String, (u16, Protocol)>,
 }
 
 impl Model {
@@ -30,6 +33,42 @@ impl Model {
 
     pub fn display_by_key(&self, key: &str) -> Option<&DisplayEntry> {
         self.displays.iter().find(|display| display.key == key)
+    }
+
+    /// Folds a control write into the cached display values so the menu reflects it at once.
+    pub fn apply_control(&mut self, display_id: u32, code: u8, value: u16) {
+        let Some(display) = self.displays.iter_mut().find(|entry| entry.id == display_id) else {
+            return;
+        };
+        match code {
+            crate::engine::VCP_MUTE => display.muted = Some(value == 1),
+            0x10 => {
+                let max = display.brightness.map(|(_, max)| max).unwrap_or(100);
+                display.brightness = Some((value.min(max), max));
+            }
+            0x12 => {
+                let max = display.contrast.map(|(_, max)| max).unwrap_or(100);
+                display.contrast = Some((value.min(max), max));
+            }
+            0x62 => {
+                let max = display.volume.map(|(_, max)| max).unwrap_or(100);
+                display.volume = Some((value.min(max), max));
+            }
+            _ => {}
+        }
+    }
+
+    pub fn remember_input(&mut self, key: &str, value: u16, protocol: Protocol) {
+        self.last_input.insert(key.to_string(), (value, protocol));
+    }
+
+    /// Whether this input is the one the display is on now, from the monitor's own report or
+    /// from the last switch this app made.
+    pub fn is_current(&self, display: &DisplayEntry, value: u16, protocol: Protocol) -> bool {
+        if self.last_input.get(&display.key) == Some(&(value, protocol)) {
+            return true;
+        }
+        protocol == Protocol::Standard && display.current_input == Some(value)
     }
 
     pub fn released(&self, key: &str) -> bool {
