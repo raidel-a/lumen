@@ -19,6 +19,8 @@ use tray_icon::{TrayIcon, TrayIconBuilder};
 thread_local! {
     static MODEL: RefCell<Model> = RefCell::new(Model::default());
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+    /// Bumped on every display-change notification so a burst collapses into one scan.
+    static RESCAN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Runs `job` on the main thread on the next run-loop turn.
@@ -47,6 +49,23 @@ pub fn redraw_menu() {
 pub fn after_change() {
     redraw_menu();
     on_main(ui::rebuild_if_open);
+}
+
+/// Rescans after display changes and wake, coalescing bursts into one scan.
+pub fn schedule_rescan() {
+    let generation = RESCAN.with(|cell| {
+        let next = cell.get() + 1;
+        cell.set(next);
+        next
+    });
+    dispatch::Queue::main().exec_after(Duration::from_millis(350), move || {
+        if RESCAN.with(|cell| cell.get()) == generation {
+            if std::env::var_os("LUMEN_TRACE").is_some() {
+                eprintln!("rescan: display configuration changed");
+            }
+            spawn_scan();
+        }
+    });
 }
 
 fn spawn_scan() {
@@ -147,7 +166,7 @@ fn handle_menu(id: &str) {
                     let message = engine::reclaim(id, &name);
                     on_main(move || {
                         with_model(|model| {
-                            model.released.retain(|entry| entry.id != id);
+                            model.forget_released(id);
                             model.message = Some(message);
                             model.set_displays(engine::scan());
                         });
@@ -159,8 +178,8 @@ fn handle_menu(id: &str) {
         Action::Reclaim { key } => {
             let released = with_model(|model| {
                 let entry = model.released.iter().find(|entry| entry.key == key).cloned();
-                if entry.is_some() {
-                    model.released.retain(|item| item.key != key);
+                if let Some(entry) = &entry {
+                    model.forget_released(entry.id);
                 }
                 entry
             });
@@ -189,6 +208,20 @@ fn main() {
     unsafe { app.finishLaunching() };
 
     with_model(|model| model.config = config::Config::load());
+
+    // If a previous run died while a display was released, bring it back before anything else.
+    let stale = with_model(|model| std::mem::take(&mut model.config.released));
+    if !stale.is_empty() {
+        for record in &stale {
+            let _ = lumen::native::set_enabled(record.id, true);
+        }
+        if std::env::var_os("LUMEN_TRACE").is_some() {
+            eprintln!("reclaimed {} display(s) from a previous run", stale.len());
+        }
+        with_model(|model| model.config.save());
+    }
+
+    ui::init();
 
     let model = snapshot();
     let tray = TrayIconBuilder::new()
