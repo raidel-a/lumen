@@ -17,6 +17,9 @@ pub enum Action {
     Settings,
     Switch { display: u32, value: u16, protocol: InputProtocol },
     Brightness { display: u32, value: u16 },
+    Contrast { display: u32, value: u16 },
+    Volume { display: u32, value: u16 },
+    Mute { display: u32, muted: bool },
     Release { key: String },
     Reclaim { key: String },
 }
@@ -83,7 +86,7 @@ fn display_menu(model: &Model, display: &DisplayEntry) -> Submenu {
     } else {
         let _ = submenu.append(&MenuItem::new("Switch input (DDC, if supported)", false, None));
         for input in inputs {
-            let checked = false;
+            let checked = model.is_current(display, input.value, input.protocol);
             let item = CheckMenuItem::with_id(
                 switch_id(display.id, input.value, input.protocol),
                 format!("{} ({})", input.label, input.protocol.label()),
@@ -95,38 +98,83 @@ fn display_menu(model: &Model, display: &DisplayEntry) -> Submenu {
         }
     }
 
+    let controls = Submenu::new("Controls", true);
+    let mut any = false;
+
     if model.config.show_brightness {
         if let Some((value, max)) = display.brightness {
-            let _ = submenu.append(&PredefinedMenuItem::separator());
-            let _ = submenu.append(&MenuItem::new(
+            any = true;
+            let _ = controls.append(&MenuItem::new(
                 format!("Brightness {}", percent(value, max)),
                 false,
                 None,
             ));
-            for (label, target) in [("25%", 25u16), ("50%", 50), ("75%", 75), ("100%", 100)] {
+            for (label, target) in presets() {
                 let value = max.saturating_mul(target) / 100;
                 let item = MenuItem::with_id(brightness_id(display.id, value), label, true, None);
-                let _ = submenu.append(&item);
+                let _ = controls.append(&item);
             }
         }
     }
 
     if let Some((value, max)) = display.contrast {
-        let _ = submenu.append(&MenuItem::new(
+        any = true;
+        let _ = controls.append(&PredefinedMenuItem::separator());
+        let _ = controls.append(&MenuItem::new(
             format!("Contrast {}", percent(value, max)),
             false,
             None,
         ));
+        for (label, target) in presets() {
+            let value = max.saturating_mul(target) / 100;
+            let _ = controls.append(&MenuItem::with_id(
+                contrast_id(display.id, value),
+                label,
+                true,
+                None,
+            ));
+        }
     }
+
     if let Some((value, max)) = display.volume {
-        let _ = submenu.append(&MenuItem::new(
+        any = true;
+        let _ = controls.append(&PredefinedMenuItem::separator());
+        let _ = controls.append(&MenuItem::new(
             format!("Volume {}", percent(value, max)),
             false,
             None,
         ));
+        for (label, target) in presets() {
+            let value = max.saturating_mul(target) / 100;
+            let _ = controls.append(&MenuItem::with_id(
+                volume_id(display.id, value),
+                label,
+                true,
+                None,
+            ));
+        }
+        if display.muted.is_some() {
+            let item = CheckMenuItem::with_id(
+                mute_id(display.id, !display.muted.unwrap_or(false)),
+                "Mute",
+                true,
+                display.muted.unwrap_or(false),
+                None,
+            );
+            let _ = controls.append(&item);
+        }
+    }
+
+    if any {
+        let _ = submenu.append(&PredefinedMenuItem::separator());
+        let _ = submenu.append(&controls);
     }
 
     submenu
+}
+
+fn presets() -> [(&'static str, u16); 4] {
+    [("25%", 25), ("50%", 50), ("75%", 75), ("100%", 100)]
 }
 
 /// Turns a menu id back into the action it stands for.
@@ -160,6 +208,21 @@ pub fn parse(id: &str) -> Option<Action> {
             let value = parts.next()?.parse().ok()?;
             Some(Action::Brightness { display, value })
         }
+        "contrast" => {
+            let display = parts.next()?.parse().ok()?;
+            let value = parts.next()?.parse().ok()?;
+            Some(Action::Contrast { display, value })
+        }
+        "volume" => {
+            let display = parts.next()?.parse().ok()?;
+            let value = parts.next()?.parse().ok()?;
+            Some(Action::Volume { display, value })
+        }
+        "mute" => {
+            let display = parts.next()?.parse().ok()?;
+            let muted = parts.next()? == "1";
+            Some(Action::Mute { display, muted })
+        }
         _ => None,
     }
 }
@@ -174,6 +237,18 @@ fn switch_id(display: u32, value: u16, protocol: Protocol) -> String {
 
 fn brightness_id(display: u32, value: u16) -> String {
     format!("brightness:{display}:{value}")
+}
+
+fn contrast_id(display: u32, value: u16) -> String {
+    format!("contrast:{display}:{value}")
+}
+
+fn volume_id(display: u32, value: u16) -> String {
+    format!("volume:{display}:{value}")
+}
+
+fn mute_id(display: u32, muted: bool) -> String {
+    format!("mute:{display}:{}", u8::from(muted))
 }
 
 fn release_id(key: String) -> String {

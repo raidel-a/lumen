@@ -22,6 +22,10 @@ thread_local! {
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
     /// Bumped on every display-change notification so a burst collapses into one scan.
     static RESCAN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// Slider values waiting for the debounce to write them.
+    static PENDING_CONTROLS: RefCell<std::collections::HashMap<(u32, u8), u16>> =
+        RefCell::new(std::collections::HashMap::new());
+    static CONTROL_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Runs `job` on the main thread on the next run-loop turn.
@@ -52,6 +56,41 @@ pub fn after_change() {
     on_main(ui::rebuild_if_open);
 }
 
+/// Queues a slider write; a burst of drag events collapses into one DDC write per control.
+pub fn queue_control(display_id: u32, code: u8, value: u16) {
+    PENDING_CONTROLS.with(|pending| {
+        pending.borrow_mut().insert((display_id, code), value);
+    });
+    let generation = CONTROL_GEN.with(|cell| {
+        let next = cell.get() + 1;
+        cell.set(next);
+        next
+    });
+    dispatch::Queue::main().exec_after(Duration::from_millis(150), move || {
+        if CONTROL_GEN.with(|cell| cell.get()) != generation {
+            return;
+        }
+        let writes: Vec<((u32, u8), u16)> = PENDING_CONTROLS.with(|pending| {
+            pending.borrow_mut().drain().collect()
+        });
+        if writes.is_empty() {
+            return;
+        }
+        let echo = writes.clone();
+        std::thread::spawn(move || {
+            for ((id, code), value) in writes {
+                let _ = engine::write_vcp_quiet(id, code, value);
+            }
+            on_main(move || {
+                for ((id, code), value) in echo {
+                    with_model(|model| model.apply_control(id, code, value));
+                }
+                after_change();
+            });
+        });
+    });
+}
+
 /// Rescans after display changes and wake, coalescing bursts into one scan.
 pub fn schedule_rescan() {
     let generation = RESCAN.with(|cell| {
@@ -74,6 +113,20 @@ fn spawn_scan() {
         let displays = engine::scan();
         on_main(move || {
             with_model(|model| model.set_displays(displays));
+            after_change();
+        });
+    });
+}
+
+/// Writes one VCP control and folds the value into the model without a full rescan.
+pub fn apply_control(display_id: u32, code: u8, value: u16) {
+    std::thread::spawn(move || {
+        let message = engine::write_vcp(display_id, code, value);
+        on_main(move || {
+            with_model(|model| {
+                model.message = Some(message);
+                model.apply_control(display_id, code, value);
+            });
             after_change();
         });
     });
@@ -116,28 +169,30 @@ fn handle_menu(id: &str) {
             .unwrap_or_else(|| format!("input {value:#06x}"));
 
             let input = lumen::ddc::InputCode { label, value, protocol };
+            let key = with_model(|model| model.display(display).map(|entry| entry.key.clone()));
             std::thread::spawn(move || {
                 let message = engine::switch(display, &input);
                 on_main(move || {
                     with_model(|model| {
                         model.message = Some(message);
                         model.set_displays(engine::scan());
+                        if let Some(key) = key {
+                            model.remember_input(&key, value, Protocol::from_ddc(protocol));
+                        }
                     });
                     after_change();
                 });
             });
         }
         Action::Brightness { display, value } => {
-            std::thread::spawn(move || {
-                let message = engine::write_vcp(display, lumen::ddc::VCP_BRIGHTNESS, value);
-                on_main(move || {
-                    with_model(|model| {
-                        model.message = Some(message);
-                        model.set_displays(engine::scan());
-                    });
-                    after_change();
-                });
-            });
+            apply_control(display, lumen::ddc::VCP_BRIGHTNESS, value)
+        }
+        Action::Contrast { display, value } => {
+            apply_control(display, lumen::ddc::VCP_CONTRAST, value)
+        }
+        Action::Volume { display, value } => apply_control(display, lumen::ddc::VCP_VOLUME, value),
+        Action::Mute { display, muted } => {
+            apply_control(display, engine::VCP_MUTE, if muted { 1 } else { 2 })
         }
         Action::Release { key } => {
             let name = with_model(|model| {

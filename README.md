@@ -55,6 +55,14 @@ under System Settings > General > Login Items; the switch reflects the live regi
 including the "needs approval" case. The app also rescans after display configuration changes and
 on wake, so the menu stays correct without pressing Refresh.
 
+## Display controls
+
+The Displays page has sliders for brightness, contrast and volume. Drags are coalesced into one
+DDC write every 150 ms and update the readout immediately; the menu's Control submenu offers the
+same values as 25/50/75/100 presets plus a mute toggle. The editor marks the input the display
+reports as active (VCP 0x60) or the one this app last switched to, and the settings window grows
+or shrinks to fit the input list.
+
 ## Memory
 
 Measured with `footprint`, which is what Activity Monitor reports; `ps` RSS counts shared library
@@ -105,4 +113,4 @@ Verified round trip on the LG.
 - Global hotkeys for release/reclaim.
 - "Learn inputs": probe a display and record which values actually switch.
 - Launch at login.
-- Brightness/contrast sliders instead of menu presets.
+- Per-input "Test" button (probe one candidate, with a warning that the display may go dark).
