@@ -2,10 +2,10 @@
 
 mod config;
 mod engine;
-mod icon;
 mod login;
 mod menu;
 mod model;
+mod status;
 mod ui;
 
 use config::Protocol;
@@ -15,11 +15,9 @@ use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 use objc2_foundation::MainThreadMarker;
 use std::cell::RefCell;
 use std::time::Duration;
-use tray_icon::{TrayIcon, TrayIconBuilder};
 
 thread_local! {
     static MODEL: RefCell<Model> = RefCell::new(Model::default());
-    static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
     /// Bumped on every display-change notification so a burst collapses into one scan.
     static RESCAN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// Slider values waiting for the debounce to write them.
@@ -37,22 +35,8 @@ pub fn with_model<R>(f: impl FnOnce(&mut Model) -> R) -> R {
     MODEL.with(|model| f(&mut model.borrow_mut()))
 }
 
-fn snapshot() -> Model {
-    with_model(|model| model.snapshot())
-}
-
-pub fn redraw_menu() {
-    let model = snapshot();
-    TRAY.with(|slot| {
-        if let Some(tray) = slot.borrow().as_ref() {
-            tray.set_menu(Some(Box::new(menu::build(&model))));
-        }
-    });
-}
-
-/// Persist-then-refresh used by every settings action: menu now, window on the next turn.
+/// Refreshes the settings window after a model change; the menu rebuilds itself when it opens.
 pub fn after_change() {
-    redraw_menu();
     on_main(ui::rebuild_if_open);
 }
 
@@ -155,10 +139,7 @@ pub fn apply_control(display_id: u32, code: u8, value: u16) {
     });
 }
 
-fn handle_menu(id: &str) {
-    let Some(action) = menu::parse(id) else {
-        return;
-    };
+pub fn run_action(action: Action) {
     match action {
         Action::Refresh => spawn_scan(),
         Action::Settings => ui::open(),
@@ -171,7 +152,6 @@ fn handle_menu(id: &str) {
                 }
             });
             let _ = reclaim;
-            redraw_menu();
             if let Some(mtm) = MainThreadMarker::new() {
                 unsafe { NSApplication::sharedApplication(mtm).terminate(None) };
             }
@@ -322,26 +302,10 @@ fn main() {
         with_model(|model| model.config.save());
     }
 
-    ui::init();
-
-    let model = snapshot();
-    let tray = TrayIconBuilder::new()
-        .with_icon_templated(icon::menu_bar_icon())
-        .with_tooltip("Lumen - display control")
-        .with_menu(Box::new(menu::build(&model)))
-        .with_menu_on_left_click(true)
-        .build()
-        .ok();
-    TRAY.with(|slot| *slot.borrow_mut() = tray);
+    let actions = ui::init();
+    status::init(&actions);
 
     spawn_scan();
-
-    std::thread::spawn(|| {
-        while let Ok(event) = muda::MenuEvent::receiver().recv() {
-            let id = event.id.as_ref().to_string();
-            on_main(move || handle_menu(&id));
-        }
-    });
 
     unsafe { app.run() };
 }

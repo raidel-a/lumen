@@ -12,7 +12,8 @@ use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControl,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSAlert, NSApplicationDidChangeScreenParametersNotification, NSAlertFirstButtonReturn, NSSlider,
+    NSAlert, NSApplicationDidChangeScreenParametersNotification, NSAlertFirstButtonReturn, NSMenu,
+    NSMenuDelegate, NSSlider,
     NSSwitch, NSTextField, NSTitlePosition,
     NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
@@ -638,7 +639,7 @@ fn make_actions() -> Retained<Actions> {
 }
 
 /// Creates the shared action target and subscribes to display-configuration and wake events.
-pub fn init() {
+pub fn init() -> Retained<Actions> {
     let actions = ACTIONS.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.is_none() {
@@ -661,6 +662,7 @@ pub fn init() {
             None,
         );
     }
+    actions
 }
 
 pub fn open() {
@@ -732,7 +734,7 @@ fn sender_tag(sender: *mut AnyObject) -> isize {
 }
 
 declare_class!(
-    struct Actions;
+    pub struct Actions;
 
     unsafe impl ClassType for Actions {
         type Super = NSObject;
@@ -747,6 +749,28 @@ declare_class!(
     unsafe impl NSObjectProtocol for Actions {}
 
     unsafe impl Actions {
+        #[method(menuAction:)]
+        fn menu_action(&self, sender: *mut AnyObject) {
+            let Some(item) = (unsafe { sender.as_ref() }) else {
+                return;
+            };
+            if let Some(action) = crate::status::item_action(item) {
+                crate::run_action(action);
+            }
+        }
+
+        #[method(menuControlChanged:)]
+        fn menu_control_changed(&self, sender: *mut AnyObject) {
+            let tag = sender_tag(sender);
+            let display_id = (tag >> 8) as u32;
+            let code = (tag & 0xff) as u8;
+            let raw: f64 = unsafe { msg_send![sender, doubleValue] };
+            let value = raw.max(0.0).round() as u16;
+            crate::with_model(|model| model.apply_control(display_id, code, value));
+            crate::status::set_readout(display_id, code, value);
+            crate::queue_control(display_id, code, value);
+        }
+
         #[method(testInput:)]
         fn test_input(&self, sender: *mut AnyObject) {
             let index = sender_tag(sender).max(0) as usize;
@@ -1014,6 +1038,13 @@ declare_class!(
                 model.config.reset_inputs(&key, &displays);
             });
             crate::after_change();
+        }
+    }
+
+    unsafe impl NSMenuDelegate for Actions {
+        #[method(menuNeedsUpdate:)]
+        fn menu_needs_update(&self, menu: &NSMenu) {
+            crate::status::fill(menu, self);
         }
     }
 
