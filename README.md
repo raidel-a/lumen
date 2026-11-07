@@ -63,8 +63,9 @@ on wake, so the menu stays correct without pressing Refresh.
 ## Display controls
 
 The Displays page has sliders for brightness, contrast and volume, and the display's menu holds
-the same sliders as menu item views plus a mute toggle. Drags are coalesced into one DDC write
-every 150 ms and update the readout immediately. The editor marks the input the display
+the same sliders as menu item views plus a mute toggle. Sliders snap to five points - 0, 25, 50,
+75 and 100 percent - so a drag lands on a value you can repeat. Drags are coalesced into one DDC
+write every 150 ms and update the readout immediately. The editor marks the input the display
 reports as active (VCP 0x60) or the one this app last switched to, and the settings window grows
 or shrinks to fit the input list.
 

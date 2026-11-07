@@ -13,7 +13,7 @@ use objc2_app_kit::{
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSSegmentSwitchTracking, NSSegmentedControl,
     NSAlert, NSApplicationDidChangeScreenParametersNotification, NSAlertFirstButtonReturn, NSMenu,
-    NSMenuDelegate, NSSlider,
+    NSMenuDelegate, NSSlider, NSTickMarkPosition,
     NSSwitch, NSTextField, NSTitlePosition,
     NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
@@ -240,11 +240,14 @@ fn control_row(
 ) -> Retained<NSTextField> {
     unsafe {
         parent.addSubview(&label(title, 12.0, NSFontWeightMedium, &theme.text, frame(230.0, y, 84.0, 18.0)));
-        let slider = NSSlider::initWithFrame(mtm().alloc(), frame(318.0, y - 3.0, 240.0, 22.0));
+        let slider = NSSlider::initWithFrame(mtm().alloc(), frame(318.0, y - 2.0, 240.0, 22.0));
         slider.setMinValue(0.0);
         slider.setMaxValue(max.max(1) as f64);
         slider.setDoubleValue(value as f64);
         slider.setContinuous(true);
+        slider.setNumberOfTickMarks(5);
+        slider.setAllowsTickMarkValuesOnly(true);
+        slider.setTickMarkPosition(NSTickMarkPosition::Below);
         slider.setTag(tag_value);
         wire(&slider, sel!(controlChanged:));
         parent.addSubview(&slider);
@@ -427,17 +430,17 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
         if let Some((value, max)) = display.brightness {
             let text = control_row(parent, theme, y, "Brightness", value, max, 1);
             UI.with(|ui| ui.borrow_mut().brightness_value = Some(text));
-            y += 28.0;
+            y += 32.0;
         }
         if let Some((value, max)) = display.contrast {
             let text = control_row(parent, theme, y, "Contrast", value, max, 2);
             UI.with(|ui| ui.borrow_mut().contrast_value = Some(text));
-            y += 28.0;
+            y += 32.0;
         }
         if let Some((value, max)) = display.volume {
             let text = control_row(parent, theme, y, "Volume", value, max, 3);
             UI.with(|ui| ui.borrow_mut().volume_value = Some(text));
-            y += 28.0;
+            y += 32.0;
         }
 
         y += 8.0;
@@ -576,7 +579,7 @@ fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) 
                 .and_then(|display| model.config.display(&display.key))
                 .map(|config| config.inputs.len())
                 .unwrap_or(0);
-            (162.0 + controls as f64 * 28.0 + inputs as f64 * 40.0 + 86.0).clamp(520.0, 900.0)
+            (162.0 + controls as f64 * 32.0 + inputs as f64 * 40.0 + 86.0).clamp(520.0, 900.0)
         }
     };
     let previous = CONTENT_HEIGHT.with(|cell| cell.get());
