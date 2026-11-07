@@ -1,7 +1,4 @@
-//! Application state and the blocking display operations.
-//!
-//! Everything here talks to hardware, so it runs on a worker thread and the result is handed
-//! back to the menu bar thread.
+//! Display operations. Everything here touches hardware, so it runs on worker threads.
 
 use lumen::ddc::{
     DataAddress, Display, InputCode, InputProtocol, VCP_BRIGHTNESS, VCP_CONTRAST, VCP_VOLUME,
@@ -11,6 +8,8 @@ use std::time::Duration;
 #[derive(Clone, Debug)]
 pub struct DisplayEntry {
     pub id: u32,
+    /// Stable identity used by the config file.
+    pub key: String,
     pub name: String,
     pub inputs: Vec<InputCode>,
     pub brightness: Option<(u16, u16)>,
@@ -28,6 +27,7 @@ pub fn scan() -> Vec<DisplayEntry> {
         let volume = display.read_vcp(VCP_VOLUME).ok().map(|v| (v.value, v.max));
         displays.push(DisplayEntry {
             id: display.id,
+            key: display.identity_key(),
             name: display.name.clone(),
             inputs,
             brightness,
