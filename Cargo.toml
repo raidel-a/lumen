@@ -1,0 +1,22 @@
+[package]
+name = "lumen"
+version = "0.1.0"
+edition = "2024"
+description = "A menu bar display controller for macOS, starting with DDC/CI input switching"
+license = "MIT"
+
+[lib]
+name = "lumen"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lumen-probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+core-graphics = "0.24"
+muda = "0.21.2"
+tray-icon = "0.26.1"
+winit = "0.30.13"
