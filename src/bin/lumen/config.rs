@@ -21,6 +21,13 @@ impl Protocol {
         }
     }
 
+    pub fn to_ddc(self) -> lumen::ddc::InputProtocol {
+        match self {
+            Protocol::Standard => lumen::ddc::InputProtocol::Standard,
+            Protocol::LgAlt => lumen::ddc::InputProtocol::LgAlt,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Protocol::Standard => "standard",
@@ -35,6 +42,9 @@ pub struct InputSetting {
     pub value: u16,
     pub protocol: Protocol,
     pub enabled: bool,
+    /// None until tested, then whether a switch this app sent actually worked.
+    #[serde(default)]
+    pub verified: Option<bool>,
 }
 
 impl InputSetting {
@@ -44,6 +54,7 @@ impl InputSetting {
             value: input.value,
             protocol: Protocol::from_ddc(input.protocol),
             enabled: true,
+            verified: None,
         }
     }
 }
@@ -152,6 +163,18 @@ impl Config {
 
     pub fn display_mut(&mut self, key: &str) -> Option<&mut DisplayConfig> {
         self.displays.iter_mut().find(|entry| entry.key == key)
+    }
+
+    /// Records the result of a switch attempt on one input.
+    pub fn mark_input(&mut self, key: &str, value: u16, protocol: Protocol, worked: bool) {
+        if let Some(entry) = self.display_mut(key) {
+            for input in entry.inputs.iter_mut() {
+                if input.value == value && input.protocol == protocol {
+                    input.verified = Some(worked);
+                }
+            }
+        }
+        self.save();
     }
 
     /// Replaces a display's list with what the monitor currently advertises.

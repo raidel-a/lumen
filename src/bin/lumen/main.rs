@@ -118,6 +118,29 @@ fn spawn_scan() {
     });
 }
 
+/// Switches an input on a worker and records whether the attempt actually worked.
+pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<String>) {
+    let value = input.value;
+    let protocol = Protocol::from_ddc(input.protocol);
+    std::thread::spawn(move || {
+        let outcome = engine::switch(display_id, &input);
+        let switched = outcome.switched;
+        on_main(move || {
+            with_model(|model| {
+                model.message = Some(outcome.message);
+                model.set_displays(engine::scan());
+                if let Some(key) = key {
+                    if switched {
+                        model.remember_input(&key, value, protocol);
+                    }
+                    model.config.mark_input(&key, value, protocol, switched);
+                }
+            });
+            after_change();
+        });
+    });
+}
+
 /// Writes one VCP control and folds the value into the model without a full rescan.
 pub fn apply_control(display_id: u32, code: u8, value: u16) {
     std::thread::spawn(move || {
@@ -170,19 +193,7 @@ fn handle_menu(id: &str) {
 
             let input = lumen::ddc::InputCode { label, value, protocol };
             let key = with_model(|model| model.display(display).map(|entry| entry.key.clone()));
-            std::thread::spawn(move || {
-                let message = engine::switch(display, &input);
-                on_main(move || {
-                    with_model(|model| {
-                        model.message = Some(message);
-                        model.set_displays(engine::scan());
-                        if let Some(key) = key {
-                            model.remember_input(&key, value, Protocol::from_ddc(protocol));
-                        }
-                    });
-                    after_change();
-                });
-            });
+            switch_input(display, input, key);
         }
         Action::Brightness { display, value } => {
             apply_control(display, lumen::ddc::VCP_BRIGHTNESS, value)

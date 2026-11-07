@@ -12,8 +12,8 @@ use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControl,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSApplicationDidChangeScreenParametersNotification, NSSlider, NSSwitch, NSTextField,
-    NSTitlePosition,
+    NSAlert, NSApplicationDidChangeScreenParametersNotification, NSAlertFirstButtonReturn, NSSlider,
+    NSSwitch, NSTextField, NSTitlePosition,
     NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
@@ -461,19 +461,41 @@ fn build_displays(parent: &NSView, model: &Model, theme: &Theme, selected: usize
                 sel!(toggleInput:),
             );
             tag(&cb, index as isize);
+            let (badge, badge_color) = match input.verified {
+                Some(true) => ("✓", &theme.text),
+                Some(false) => ("✗", &theme.secondary),
+                None => ("", &theme.secondary),
+            };
+            if !badge.is_empty() {
+                parent.addSubview(&label(
+                    badge,
+                    12.0,
+                    NSFontWeightSemibold,
+                    badge_color,
+                    NSRect::new(NSPoint::new(row.origin.x + 36.0, row.origin.y + 9.0), NSSize::new(14.0, 18.0)),
+                ));
+            }
             parent.addSubview(&label(
                 &input.label,
                 13.0,
                 NSFontWeightMedium,
                 if input.enabled { &theme.text } else { &theme.secondary },
-                NSRect::new(NSPoint::new(row.origin.x + 36.0, row.origin.y + 9.0), NSSize::new(150.0, 18.0)),
+                NSRect::new(NSPoint::new(row.origin.x + 54.0, row.origin.y + 9.0), NSSize::new(140.0, 18.0)),
             ));
             parent.addSubview(&mono(
                 &format!("{:#06x}", input.value),
                 11.0,
                 &theme.secondary,
-                NSRect::new(NSPoint::new(row.origin.x + row.size.width - 200.0, row.origin.y + 9.0), NSSize::new(80.0, 16.0)),
+                NSRect::new(NSPoint::new(row.origin.x + row.size.width - 280.0, row.origin.y + 9.0), NSSize::new(80.0, 16.0)),
             ));
+            let tb = button(
+                "Test",
+                parent,
+                NSRect::new(NSPoint::new(row.origin.x + row.size.width - 190.0, row.origin.y + 5.0), NSSize::new(66.0, 24.0)),
+                false,
+                sel!(testInput:),
+            );
+            tag(&tb, index as isize);
             let pb = button(
                 input.protocol.label(),
                 parent,
@@ -725,6 +747,45 @@ declare_class!(
     unsafe impl NSObjectProtocol for Actions {}
 
     unsafe impl Actions {
+        #[method(testInput:)]
+        fn test_input(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender).max(0) as usize;
+            let selected = UI.with(|ui| ui.borrow().selected);
+            let Some((display_id, key, name, input)) = crate::with_model(|model| {
+                let display = model.displays.get(selected)?;
+                let config = model.config.display(&display.key)?;
+                let input = config.inputs.get(index)?.clone();
+                Some((display.id, display.key.clone(), display.name.clone(), input))
+            }) else {
+                return;
+            };
+
+            let alert = unsafe { NSAlert::new(mtm()) };
+            unsafe {
+                alert.setMessageText(&NSString::from_str(&format!(
+                    "Test {} on {}?",
+                    input.label, name
+                )));
+                alert.setInformativeText(&NSString::from_str(
+                    "Lumen sends a DDC input-select command. If the monitor accepts it, it switches \
+                     away and this display disappears from the Mac. Some monitors cannot switch back \
+                     over DDC, so you may need the monitor's own controls to return.",
+                ));
+                alert.addButtonWithTitle(&NSString::from_str("Test"));
+                alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+                if alert.runModal() != NSAlertFirstButtonReturn {
+                    return;
+                }
+            }
+
+            let code = lumen::ddc::InputCode {
+                label: format!("{} ({})", input.label, input.protocol.label()),
+                value: input.value,
+                protocol: input.protocol.to_ddc(),
+            };
+            crate::switch_input(display_id, code, Some(key));
+        }
+
         #[method(controlChanged:)]
         fn control_changed(&self, sender: *mut AnyObject) {
             let tag = sender_tag(sender);
@@ -937,7 +998,7 @@ declare_class!(
             let Some(key) = key else { return };
             crate::with_model(|model| {
                 if let Some(config) = model.config.display_mut(&key) {
-                    config.inputs.push(InputSetting { label, value, protocol, enabled: true });
+                    config.inputs.push(InputSetting { label, value, protocol, enabled: true, verified: None });
                 }
                 model.config.save();
             });

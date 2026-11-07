@@ -63,6 +63,13 @@ same values as 25/50/75/100 presets plus a mute toggle. The editor marks the inp
 reports as active (VCP 0x60) or the one this app last switched to, and the settings window grows
 or shrinks to fit the input list.
 
+Each input row has a **Test** button. It asks for confirmation first, then sends that input's
+command (with the protocol fallbacks) and records whether the display actually left: a ✓ or ✗
+badge in the row, persisted in the config. The warning matters because a monitor that accepts the
+command switches away and some firmware cannot switch back over DDC - you may need the monitor's
+own controls. Successful switches from the menu are recorded the same way, so the list also
+learns from normal use.
+
 ## Memory
 
 Measured with `footprint`, which is what Activity Monitor reports; `ps` RSS counts shared library
@@ -111,6 +118,3 @@ Verified round trip on the LG.
 ## Roadmap
 
 - Global hotkeys for release/reclaim.
-- "Learn inputs": probe a display and record which values actually switch.
-- Launch at login.
-- Per-input "Test" button (probe one candidate, with a warning that the display may go dark).
