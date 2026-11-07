@@ -246,7 +246,7 @@ fn control_row(
         slider.setDoubleValue(value as f64);
         slider.setContinuous(true);
         slider.setNumberOfTickMarks(5);
-        slider.setAllowsTickMarkValuesOnly(true);
+        slider.setAllowsTickMarkValuesOnly(false);
         slider.setTickMarkPosition(NSTickMarkPosition::Below);
         slider.setTag(tag_value);
         wire(&slider, sel!(controlChanged:));
@@ -768,7 +768,19 @@ declare_class!(
             let display_id = (tag >> 8) as u32;
             let code = (tag & 0xff) as u8;
             let raw: f64 = unsafe { msg_send![sender, doubleValue] };
-            let value = raw.max(0.0).round() as u16;
+            let max = crate::with_model(|model| {
+                model.display(display_id).and_then(|display| match code {
+                    0x10 => display.brightness,
+                    0x12 => display.contrast,
+                    _ => display.volume,
+                })
+            })
+            .map(|(_, max)| max)
+            .unwrap_or(100);
+            let value = crate::snap_control(raw, max, crate::fine_control());
+            if (raw - f64::from(value)).abs() >= 0.5 {
+                let _: () = unsafe { msg_send![sender, setDoubleValue: f64::from(value)] };
+            }
             crate::with_model(|model| model.apply_control(display_id, code, value));
             crate::status::set_readout(display_id, code, value);
             crate::queue_control(display_id, code, value);
@@ -816,8 +828,6 @@ declare_class!(
         #[method(controlChanged:)]
         fn control_changed(&self, sender: *mut AnyObject) {
             let tag = sender_tag(sender);
-            let raw: f64 = unsafe { msg_send![sender, doubleValue] };
-            let value = raw.max(0.0).round() as u16;
             let code = match tag {
                 2 => 0x12u8,
                 3 => 0x62,
@@ -838,6 +848,12 @@ declare_class!(
             })
             .map(|(_, max)| max)
             .unwrap_or(100);
+
+            let raw: f64 = unsafe { msg_send![sender, doubleValue] };
+            let value = crate::snap_control(raw, max, crate::fine_control());
+            if (raw - f64::from(value)).abs() >= 0.5 {
+                let _: () = unsafe { msg_send![sender, setDoubleValue: f64::from(value)] };
+            }
 
             UI.with(|ui| {
                 let ui = ui.borrow();
