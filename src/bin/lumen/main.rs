@@ -130,7 +130,7 @@ impl ApplicationHandler<Event> for Lumen {
     fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
         if self.tray.is_none() {
             self.tray = TrayIconBuilder::new()
-                .with_icon_templated(icon::monitor_icon())
+                .with_icon_templated(icon::menu_bar_icon())
                 .with_tooltip("Lumen - display control")
                 .with_menu(Box::new(menu::build(&MenuState {
                     displays: &self.displays,
