@@ -1,6 +1,6 @@
 //! The app's model: what the menu and the settings window read.
 
-use crate::config::Config;
+use crate::config::{Config, ReleasedRecord};
 use crate::engine::DisplayEntry;
 
 #[derive(Clone, Debug)]
@@ -39,7 +39,14 @@ impl Model {
     /// Applies a fresh scan, keeping release records only for displays that are still away.
     pub fn set_displays(&mut self, displays: Vec<DisplayEntry>) {
         self.displays = displays;
+        let before = self.released.len();
         self.released.retain(|released| !self.displays.iter().any(|display| display.id == released.id));
+        if self.released.len() != before {
+            // A released display came back on its own; its saved record is stale.
+            let live: Vec<u32> = self.released.iter().map(|entry| entry.id).collect();
+            self.config.released.retain(|record| live.contains(&record.id));
+            self.config.save();
+        }
         self.config.sync(&self.displays);
     }
 
@@ -47,9 +54,19 @@ impl Model {
         if let Some(display) = self.displays.iter().find(|display| display.id == id) {
             let key = display.key.clone();
             if !self.released.iter().any(|entry| entry.key == key) {
-                self.released.push(Released { id, key, name: name.to_string() });
+                self.released.push(Released { id, key: key.clone(), name: name.to_string() });
             }
+            self.config.released.retain(|record| record.id != id);
+            self.config.released.push(ReleasedRecord { id, key, name: name.to_string() });
+            self.config.save();
         }
+    }
+
+    /// Forgets a release record, both in memory and on disk.
+    pub fn forget_released(&mut self, id: u32) {
+        self.released.retain(|entry| entry.id != id);
+        self.config.released.retain(|record| record.id != id);
+        self.config.save();
     }
 
     /// Displays to draw in the menu: connected, and not hidden in settings.

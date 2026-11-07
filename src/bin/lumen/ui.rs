@@ -12,9 +12,13 @@ use objc2_app_kit::{
     NSApplication, NSBackingStoreType, NSBox, NSBoxType, NSButton, NSColor, NSControl,
     NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium, NSFontWeightRegular,
     NSFontWeightSemibold, NSLineBreakMode, NSSegmentSwitchTracking, NSSegmentedControl,
-    NSSwitch, NSTextField, NSTitlePosition, NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask,
+    NSApplicationDidChangeScreenParametersNotification, NSSwitch, NSTextField, NSTitlePosition,
+    NSView, NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
-use objc2_foundation::{MainThreadMarker, NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSArray, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRect,
+    NSSize, NSString,
+};
 use std::cell::RefCell;
 
 const WIDTH: f64 = 720.0;
@@ -464,6 +468,32 @@ fn make_actions() -> Retained<Actions> {
     unsafe { msg_send_id![super(object), init] }
 }
 
+/// Creates the shared action target and subscribes to display-configuration and wake events.
+pub fn init() {
+    let actions = ACTIONS.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(make_actions());
+        }
+        slot.clone().expect("actions")
+    });
+
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            &actions,
+            sel!(screensChanged:),
+            Some(NSApplicationDidChangeScreenParametersNotification),
+            None,
+        );
+        NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+            &actions,
+            sel!(didWake:),
+            Some(objc2_app_kit::NSWorkspaceDidWakeNotification),
+            None,
+        );
+    }
+}
+
 pub fn open() {
     let start = std::time::Instant::now();
     let model = crate::with_model(|model| model.snapshot());
@@ -548,6 +578,16 @@ declare_class!(
     unsafe impl NSObjectProtocol for Actions {}
 
     unsafe impl Actions {
+        #[method(screensChanged:)]
+        fn screens_changed(&self, _notification: *mut AnyObject) {
+            crate::schedule_rescan();
+        }
+
+        #[method(didWake:)]
+        fn did_wake(&self, _notification: *mut AnyObject) {
+            crate::schedule_rescan();
+        }
+
         #[method(pageChanged:)]
         fn page_changed(&self, sender: *mut AnyObject) {
             let segment: isize = unsafe { msg_send![sender, selectedSegment] };

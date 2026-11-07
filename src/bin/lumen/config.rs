@@ -48,6 +48,15 @@ impl InputSetting {
     }
 }
 
+/// A display this app released and has not brought back yet. Kept on disk so a crash cannot
+/// leave the output switched off until logout.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleasedRecord {
+    pub id: u32,
+    pub key: String,
+    pub name: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DisplayConfig {
     /// `vendor:model:serial`, or `name:<product name>` when the EDID gives nothing better.
@@ -67,6 +76,7 @@ pub struct Config {
     /// Show the brightness percentage and presets in each display's submenu.
     pub show_brightness: bool,
     pub displays: Vec<DisplayConfig>,
+    pub released: Vec<ReleasedRecord>,
 }
 
 impl Default for Config {
@@ -76,6 +86,7 @@ impl Default for Config {
             auto_reclaim_minutes: None,
             show_brightness: true,
             displays: Vec::new(),
+            released: Vec::new(),
         }
     }
 }
@@ -104,24 +115,35 @@ impl Config {
     }
 
     /// Adds configs for displays seen for the first time and refreshes their names and inputs.
+    /// Saves only when something changed, since this runs on every scan.
     pub fn sync(&mut self, displays: &[DisplayEntry]) {
+        let mut changed = false;
         for display in displays {
             match self.displays.iter_mut().find(|entry| entry.key == display.key) {
                 Some(entry) => {
-                    entry.name = display.name.clone();
+                    if entry.name != display.name {
+                        entry.name = display.name.clone();
+                        changed = true;
+                    }
                     if entry.inputs.is_empty() {
                         entry.inputs = display.inputs.iter().map(InputSetting::from_detected).collect();
+                        changed = true;
                     }
                 }
-                None => self.displays.push(DisplayConfig {
-                    key: display.key.clone(),
-                    name: display.name.clone(),
-                    show_in_menu: true,
-                    inputs: display.inputs.iter().map(InputSetting::from_detected).collect(),
-                }),
+                None => {
+                    self.displays.push(DisplayConfig {
+                        key: display.key.clone(),
+                        name: display.name.clone(),
+                        show_in_menu: true,
+                        inputs: display.inputs.iter().map(InputSetting::from_detected).collect(),
+                    });
+                    changed = true;
+                }
             }
         }
-        self.save();
+        if changed {
+            self.save();
+        }
     }
 
     pub fn display(&self, key: &str) -> Option<&DisplayConfig> {
