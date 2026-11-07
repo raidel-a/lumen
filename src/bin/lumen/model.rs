@@ -10,7 +10,7 @@ pub struct Released {
     pub name: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Model {
     pub displays: Vec<DisplayEntry>,
     pub released: Vec<Released>,
@@ -19,6 +19,11 @@ pub struct Model {
 }
 
 impl Model {
+    /// A copy for UI building, so callers never hold the model borrow while AppKit runs.
+    pub fn snapshot(&self) -> Model {
+        self.clone()
+    }
+
     pub fn display(&self, id: u32) -> Option<&DisplayEntry> {
         self.displays.iter().find(|display| display.id == id)
     }
