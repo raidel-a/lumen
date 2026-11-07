@@ -30,9 +30,10 @@ Requires macOS 13+ on Apple silicon. No accessibility, screen recording, or root
 
 ## How the app is put together
 
-- **Rune hosts the event loop.** `src/bin/lumen/main.rs` builds a `rune::App` with a hidden
-  settings window (`.keep_running().accessory().window_options(visible: false)`), then
-  `app.run()`.
+- **Rune hosts the event loop.** `src/bin/lumen/main.rs` builds a `rune::App` that starts
+  windowless (`.windowless().release_gpu_when_closed().accessory()`), then `app.run()`. No
+  window, Metal device or drawable exists until the first `Settings…` click, and closing the
+  window gives the device, surfaces and glyph atlas back.
 - **The menu bar is native.** `tray-icon`/`muda` create the `NSStatusItem`; a thread receives
   menu events and hands them to `AppHandle::update`, which runs on the UI thread. That is where
   the menu is rebuilt and the settings window opens.
@@ -61,6 +62,23 @@ signal. **Bring <display> back** drives the output again and the monitor follows
 signal. Verified round trip on the LG.
 
 The DDC path remains for monitors that implement input select properly; both are always offered.
+
+## Memory
+
+Measured with `footprint`, which is what Activity Monitor reports; `ps` RSS counts shared
+library pages and reads ~3× higher.
+
+| state | footprint |
+| --- | --- |
+| launched, settings never opened | 16 MB |
+| settings open | 44 MB first time, 53 MB after warm-up |
+| settings closed again | 27 MB first time, 31-32 MB steady over 8 cycles |
+
+Idle CPU is 0%. The deferred window is what buys the launch figure: Rune otherwise creates a
+Metal device and three CAMetalLayer drawables at startup (~12 MB of IOSurfaces plus the
+renderer heap) even with nothing on screen. The trade-off is ~650 ms on the first open and on
+each reopen, because the device and glyph atlas are recreated; there is no leak across cycles.
+For comparison, BetterDisplay idles at 57 MB.
 
 ## Caveats
 

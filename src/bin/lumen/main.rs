@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::time::Duration;
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
+
 thread_local! {
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
 }
@@ -94,7 +95,8 @@ fn main() {
         ],
         ..AppSpec::new("Lumen Settings", (720.0, 540.0), AppState::default, view)
     })
-    .keep_running()
+    .windowless()
+    .release_gpu_when_closed()
     .accessory()
     .window_options(WindowOptions { visible: false, ..Default::default() });
     let handle = app.handle();
