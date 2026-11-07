@@ -11,7 +11,9 @@ mod ui;
 use config::Protocol;
 use menu::Action;
 use model::Model;
-use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags,
+};
 use objc2_foundation::MainThreadMarker;
 use std::cell::RefCell;
 use std::time::Duration;
@@ -35,6 +37,34 @@ pub fn with_model<R>(f: impl FnOnce(&mut Model) -> R) -> R {
     MODEL.with(|model| f(&mut model.borrow_mut()))
 }
 
+/// True while Option is held: sliders then follow the pointer exactly, without snapping.
+pub fn fine_control() -> bool {
+    unsafe {
+        let flags = NSEvent::modifierFlags_class();
+        flags.0 & NSEventModifierFlags::NSEventModifierFlagOption.0 != 0
+    }
+}
+
+/// Slider value with a magnetic pull towards the tick points, or the exact value when `fine`.
+///
+/// Five ticks means snap points at 0, 25, 50, 75 and 100 percent; the pull reaches 3% of the
+/// range either side, so a drag between ticks still holds any value.
+pub fn snap_control(raw: f64, max: u16, fine: bool) -> u16 {
+    let max = max.max(1) as f64;
+    let value = raw.clamp(0.0, max);
+    if fine {
+        return value.round() as u16;
+    }
+    let step = max / 4.0;
+    let threshold = max * 0.03;
+    let nearest = (value / step).round() * step;
+    if (value - nearest).abs() <= threshold {
+        nearest.round() as u16
+    } else {
+        value.round() as u16
+    }
+}
+
 /// Refreshes the settings window after a model change; the menu rebuilds itself when it opens.
 pub fn after_change() {
     on_main(ui::rebuild_if_open);
@@ -42,6 +72,9 @@ pub fn after_change() {
 
 /// Queues a slider write; a burst of drag events collapses into one DDC write per control.
 pub fn queue_control(display_id: u32, code: u8, value: u16) {
+    if std::env::var_os("LUMEN_TRACE").is_some() {
+        eprintln!("queue_control display={display_id} code={code:#04x} value={value}");
+    }
     PENDING_CONTROLS.with(|pending| {
         pending.borrow_mut().insert((display_id, code), value);
     });

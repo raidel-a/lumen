@@ -140,9 +140,10 @@ fn slider_item(
         slider.setMaxValue(max.max(1) as f64);
         slider.setDoubleValue(value as f64);
         slider.setContinuous(true);
-        // Five snap points: 0, 25, 50, 75 and 100 percent of the range.
+        // Tick marks are guides; the pull towards them lives in the action, so a drag between
+        // ticks still holds its value and Option bypasses the pull entirely.
         slider.setNumberOfTickMarks(5);
-        slider.setAllowsTickMarkValuesOnly(true);
+        slider.setAllowsTickMarkValuesOnly(false);
         slider.setTickMarkPosition(NSTickMarkPosition::Below);
         slider.setTag(((display.id as isize) << 8) | code as isize);
         slider.setTarget(Some(actions));
