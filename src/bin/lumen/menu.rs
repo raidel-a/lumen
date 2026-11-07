@@ -77,10 +77,20 @@ pub fn build(state: &MenuState) -> Menu {
 fn display_menu(display: &DisplayEntry) -> Submenu {
     let submenu = Submenu::new(display.name.clone(), true);
 
+    if lumen::native::is_supported() {
+        let _ = submenu.append(&MenuItem::with_id(
+            release_id(display.id),
+            "Release to other input (auto-switch)",
+            true,
+            None,
+        ));
+        let _ = submenu.append(&PredefinedMenuItem::separator());
+    }
+
     if display.inputs.is_empty() {
         let _ = submenu.append(&MenuItem::new("No inputs reported", false, None));
     } else {
-        let _ = submenu.append(&MenuItem::new("Switch input (DDC)", false, None));
+        let _ = submenu.append(&MenuItem::new("Switch input (DDC, if supported)", false, None));
         for input in &display.inputs {
             let item = CheckMenuItem::with_id(
                 switch_id(display.id, input),
@@ -91,16 +101,6 @@ fn display_menu(display: &DisplayEntry) -> Submenu {
             );
             let _ = submenu.append(&item);
         }
-    }
-
-    if lumen::native::is_supported() {
-        let _ = submenu.append(&PredefinedMenuItem::separator());
-        let _ = submenu.append(&MenuItem::with_id(
-            release_id(display.id),
-            "Release to other input (auto-switch)",
-            true,
-            None,
-        ));
     }
 
     if let Some((value, max)) = display.brightness {
