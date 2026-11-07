@@ -1,248 +1,213 @@
-//! Lumen: native menu bar, Rune-rendered settings.
+//! Lumen: native menu bar, AppKit settings window.
 
 mod config;
 mod engine;
 mod icon;
 mod menu;
 mod model;
-mod settings;
+mod ui;
 
 use config::Protocol;
 use menu::Action;
-use rune::{AppSpec, AppHandle, Cx, El, WindowOptions};
-use settings::AppState;
+use model::Model;
+use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+use objc2_foundation::MainThreadMarker;
 use std::cell::RefCell;
 use std::time::Duration;
 use tray_icon::{TrayIcon, TrayIconBuilder};
 
-
 thread_local! {
+    static MODEL: RefCell<Model> = RefCell::new(Model::default());
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
 }
 
-fn view(state: &AppState, cx: &mut Cx<AppState>) -> El {
-    settings::view(state, cx)
+/// Runs `job` on the main thread on the next run-loop turn.
+fn on_main(job: impl FnOnce() + Send + 'static) {
+    dispatch::Queue::main().exec_async(job);
 }
 
-pub(crate) fn draw_menu(state: &AppState) {
+pub fn with_model<R>(f: impl FnOnce(&mut Model) -> R) -> R {
+    MODEL.with(|model| f(&mut model.borrow_mut()))
+}
+
+fn snapshot() -> Model {
+    with_model(|model| model.snapshot())
+}
+
+pub fn redraw_menu() {
+    let model = snapshot();
     TRAY.with(|slot| {
         if let Some(tray) = slot.borrow().as_ref() {
-            tray.set_menu(Some(Box::new(menu::build(&state.model))));
+            tray.set_menu(Some(Box::new(menu::build(&model))));
         }
     });
 }
 
-fn spawn_scan(handle: AppHandle<AppState>) {
-    std::thread::spawn(move || {
+/// Persist-then-refresh used by every settings action: menu now, window on the next turn.
+pub fn after_change() {
+    redraw_menu();
+    on_main(ui::rebuild_if_open);
+}
+
+fn spawn_scan() {
+    std::thread::spawn(|| {
         let displays = engine::scan();
-        handle.update(move |state, _tx| {
-            state.model.set_displays(displays);
-            draw_menu(state);
+        on_main(move || {
+            with_model(|model| model.set_displays(displays));
+            after_change();
         });
     });
 }
 
-/// Centres the settings window on the main display, in physical pixels as Rune expects.
-fn settings_position() -> (i32, i32) {
-    use core_graphics::display::CGDisplay;
+fn handle_menu(id: &str) {
+    let Some(action) = menu::parse(id) else {
+        return;
+    };
+    match action {
+        Action::Refresh => spawn_scan(),
+        Action::Settings => ui::open(),
+        Action::Quit => {
+            let reclaim = with_model(|model| {
+                if model.config.reclaim_on_quit {
+                    for released in model.released.drain(..) {
+                        engine::reclaim(released.id, &released.name);
+                    }
+                }
+            });
+            let _ = reclaim;
+            redraw_menu();
+            if let Some(mtm) = MainThreadMarker::new() {
+                unsafe { NSApplication::sharedApplication(mtm).terminate(None) };
+            }
+        }
+        Action::Switch { display, value, protocol } => {
+            let label = with_model(|model| {
+                model
+                    .display(display)
+                    .and_then(|entry| {
+                        model
+                            .config
+                            .enabled_inputs(&entry.key)
+                            .into_iter()
+                            .find(|input| input.value == value && input.protocol == Protocol::from_ddc(protocol))
+                    })
+                    .map(|input| format!("{} ({})", input.label, input.protocol.label()))
+            })
+            .unwrap_or_else(|| format!("input {value:#06x}"));
 
-    let display = CGDisplay::main();
-    let bounds = display.bounds();
-    let scale = display
-        .display_mode()
-        .map(|mode| mode.pixel_width() as f64 / mode.width().max(1) as f64)
-        .unwrap_or(2.0)
-        .max(1.0);
-    let x = (bounds.size.width - 720.0) / 2.0 * scale;
-    let y = (bounds.size.height - 540.0) / 3.0 * scale;
-    (x.max(0.0) as i32, y.max(0.0) as i32)
-}
+            let input = lumen::ddc::InputCode { label, value, protocol };
+            std::thread::spawn(move || {
+                let message = engine::switch(display, &input);
+                on_main(move || {
+                    with_model(|model| {
+                        model.message = Some(message);
+                        model.set_displays(engine::scan());
+                    });
+                    after_change();
+                });
+            });
+        }
+        Action::Brightness { display, value } => {
+            std::thread::spawn(move || {
+                let message = engine::write_vcp(display, lumen::ddc::VCP_BRIGHTNESS, value);
+                on_main(move || {
+                    with_model(|model| {
+                        model.message = Some(message);
+                        model.set_displays(engine::scan());
+                    });
+                    after_change();
+                });
+            });
+        }
+        Action::Release { key } => {
+            let name = with_model(|model| {
+                let Some(id) = model.display_by_key(&key).map(|display| display.id) else {
+                    return None;
+                };
+                let name = model.display(id).map(|display| display.name.clone()).unwrap_or_default();
+                model.mark_released(id, &name);
+                Some((id, name, model.config.auto_reclaim_minutes))
+            });
+            let Some((id, name, auto)) = name else {
+                return;
+            };
+            after_change();
+            std::thread::spawn(move || {
+                let message = engine::release(id, &name);
+                on_main(move || {
+                    with_model(|model| {
+                        model.message = Some(message);
+                        model.set_displays(engine::scan());
+                    });
+                    after_change();
+                });
 
-/// Sample content for headless layout checks (`--scene displays-full`).
-fn fake_displays(state: &mut AppState) {
-    use config::{DisplayConfig, InputSetting, Protocol};
-    use engine::DisplayEntry;
-
-    state.page = settings::Page::Displays;
-    state.model.displays = vec![DisplayEntry {
-        id: 99,
-        key: "1e6d:5bf8:0007453a".to_string(),
-        name: "LG ULTRAWIDE".to_string(),
-        inputs: Vec::new(),
-        brightness: Some((63, 100)),
-        contrast: Some((70, 100)),
-        volume: Some((85, 100)),
-    }];
-    state.model.config.displays = vec![DisplayConfig {
-        key: "1e6d:5bf8:0007453a".to_string(),
-        name: "LG ULTRAWIDE".to_string(),
-        show_in_menu: true,
-        inputs: vec![
-            InputSetting { label: "HDMI 1".into(), value: 0x11, protocol: Protocol::Standard, enabled: true },
-            InputSetting { label: "HDMI 2".into(), value: 0x12, protocol: Protocol::Standard, enabled: true },
-            InputSetting { label: "DisplayPort".into(), value: 0x0f, protocol: Protocol::Standard, enabled: false },
-            InputSetting { label: "HDMI 1".into(), value: 0x90, protocol: Protocol::LgAlt, enabled: true },
-            InputSetting { label: "HDMI 2".into(), value: 0x91, protocol: Protocol::LgAlt, enabled: true },
-        ],
-    }];
+                if let Some(minutes) = auto {
+                    std::thread::sleep(Duration::from_secs(u64::from(minutes) * 60));
+                    let message = engine::reclaim(id, &name);
+                    on_main(move || {
+                        with_model(|model| {
+                            model.released.retain(|entry| entry.id != id);
+                            model.message = Some(message);
+                            model.set_displays(engine::scan());
+                        });
+                        after_change();
+                    });
+                }
+            });
+        }
+        Action::Reclaim { key } => {
+            let released = with_model(|model| {
+                let entry = model.released.iter().find(|entry| entry.key == key).cloned();
+                if entry.is_some() {
+                    model.released.retain(|item| item.key != key);
+                }
+                entry
+            });
+            let Some(released) = released else {
+                return;
+            };
+            after_change();
+            std::thread::spawn(move || {
+                let message = engine::reclaim(released.id, &released.name);
+                on_main(move || {
+                    with_model(|model| {
+                        model.message = Some(message);
+                        model.set_displays(engine::scan());
+                    });
+                    after_change();
+                });
+            });
+        }
+    }
 }
 
 fn main() {
-    let app = rune::App::new(AppSpec {
-        scenes: &[
-            ("displays", |state: &mut AppState| state.page = settings::Page::Displays),
-            ("displays-full", fake_displays),
-        ],
-        ..AppSpec::new("Lumen Settings", (720.0, 540.0), AppState::default, view)
-    })
-    .windowless()
-    .release_gpu_when_closed()
-    .accessory()
-    .window_options(WindowOptions { visible: false, ..Default::default() });
-    let handle = app.handle();
+    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    unsafe { app.finishLaunching() };
 
+    with_model(|model| model.config = config::Config::load());
+
+    let model = snapshot();
     let tray = TrayIconBuilder::new()
         .with_icon_templated(icon::menu_bar_icon())
         .with_tooltip("Lumen - display control")
-        .with_menu(Box::new(menu::build(&Default::default())))
+        .with_menu(Box::new(menu::build(&model)))
         .with_menu_on_left_click(true)
         .build()
         .ok();
     TRAY.with(|slot| *slot.borrow_mut() = tray);
 
-    spawn_scan(handle.clone());
+    spawn_scan();
 
-    let menu_handle = handle.clone();
-    std::thread::spawn(move || {
+    std::thread::spawn(|| {
         while let Ok(event) = muda::MenuEvent::receiver().recv() {
-            let Some(action) = menu::parse(&event.id) else {
-                continue;
-            };
-            match action {
-                Action::Refresh => spawn_scan(menu_handle.clone()),
-                Action::Settings => {
-                    let open_handle = menu_handle.clone();
-                    menu_handle.update(move |_state, _tx| {
-                        open_handle.set_position(settings_position());
-                        open_handle.open();
-                    });
-                }
-                Action::Quit => {
-                    let quit_handle = menu_handle.clone();
-                    menu_handle.update(move |state, tx| {
-                        if state.model.config.reclaim_on_quit {
-                            for released in state.model.released.drain(..) {
-                                engine::reclaim(released.id, &released.name);
-                            }
-                        }
-                        draw_menu(state);
-                        tx.quit();
-                    });
-                    let _ = quit_handle;
-                }
-                Action::Switch { display, value, protocol } => {
-                    let worker = menu_handle.clone();
-                    menu_handle.update(move |state, _tx| {
-                        let Some(entry) = state.model.display(display) else {
-                            return;
-                        };
-                        let label = state
-                            .model
-                            .config
-                            .enabled_inputs(&entry.key)
-                            .into_iter()
-                            .find(|input| {
-                                input.value == value
-                                    && input.protocol == Protocol::from_ddc(protocol)
-                            })
-                            .map(|input| format!("{} ({})", input.label, input.protocol.label()))
-                            .unwrap_or_else(|| format!("input {value:#06x}"));
-                        let input = lumen::ddc::InputCode { label, value, protocol };
-                        let worker = worker.clone();
-                        std::thread::spawn(move || {
-                            let message = engine::switch(display, &input);
-                            worker.update(move |state, _tx| {
-                                state.model.message = Some(message);
-                                state.model.set_displays(engine::scan());
-                                draw_menu(state);
-                            });
-                        });
-                    });
-                }
-                Action::Brightness { display, value } => {
-                    let worker = menu_handle.clone();
-                    std::thread::spawn(move || {
-                        let message = engine::write_vcp(display, lumen::ddc::VCP_BRIGHTNESS, value);
-                        worker.update(move |state, _tx| {
-                            state.model.message = Some(message);
-                            state.model.set_displays(engine::scan());
-                            draw_menu(state);
-                        });
-                    });
-                }
-                Action::Release { key } => {
-                    let worker = menu_handle.clone();
-                    menu_handle.update(move |state, _tx| {
-                        let Some(id) = state.model.display_by_key(&key).map(|d| d.id) else {
-                            return;
-                        };
-                        let name = state
-                            .model
-                            .display(id)
-                            .map(|d| d.name.clone())
-                            .unwrap_or_else(|| format!("Display {id}"));
-                        state.model.mark_released(id, &name);
-                        let minutes = state.model.config.auto_reclaim_minutes;
-                        draw_menu(state);
-
-                        let worker = worker.clone();
-                        let timer = worker.clone();
-                        std::thread::spawn(move || {
-                            let message = engine::release(id, &name);
-                            worker.update(move |state, _tx| {
-                                state.model.message = Some(message);
-                                state.model.set_displays(engine::scan());
-                                draw_menu(state);
-                            });
-
-                            if let Some(minutes) = minutes {
-                                std::thread::sleep(Duration::from_secs(u64::from(minutes) * 60));
-                                let message = engine::reclaim(id, &name);
-                                timer.update(move |state, _tx| {
-                                    state.model.released.retain(|entry| entry.id != id);
-                                    state.model.message = Some(message);
-                                    state.model.set_displays(engine::scan());
-                                    draw_menu(state);
-                                });
-                            }
-                        });
-                    });
-                }
-                Action::Reclaim { key } => {
-                    let worker = menu_handle.clone();
-                    menu_handle.update(move |state, _tx| {
-                        let Some(released) =
-                            state.model.released.iter().find(|entry| entry.key == key).cloned()
-                        else {
-                            return;
-                        };
-                        state.model.released.retain(|entry| entry.key != key);
-                        draw_menu(state);
-
-                        let worker = worker.clone();
-                        std::thread::spawn(move || {
-                            let message = engine::reclaim(released.id, &released.name);
-                            worker.update(move |state, _tx| {
-                                state.model.message = Some(message);
-                                state.model.set_displays(engine::scan());
-                                draw_menu(state);
-                            });
-                        });
-                    });
-                }
-            }
+            let id = event.id.as_ref().to_string();
+            on_main(move || handle_menu(&id));
         }
     });
 
-    app.run();
+    unsafe { app.run() };
 }

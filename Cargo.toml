@@ -17,11 +17,11 @@ path = "src/bin/probe.rs"
 core-foundation = "0.10"
 core-foundation-sys = "0.8"
 core-graphics = "0.24"
+dispatch = "0.2"
 muda = "0.21.2"
 objc2 = "0.5.3"
-objc2-app-kit = { version = "0.2.2", features = ["NSImage", "NSBitmapImageRep", "NSGraphicsContext", "NSGraphics", "NSImageRep"] }
-objc2-foundation = "0.2.2"
-rune = { git = "https://github.com/anomalyco/rune", rev = "dd0888d11bdf9bf24e98a35087f15f803336f405", version = "0.0.1" }
+objc2-app-kit = { version = "0.2.2", features = ["all"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSGeometry", "NSString", "NSValue"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 tray-icon = "0.26.1"

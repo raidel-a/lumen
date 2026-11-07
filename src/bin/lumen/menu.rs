@@ -4,7 +4,7 @@ use crate::config::Protocol;
 use crate::engine::DisplayEntry;
 use crate::model::Model;
 use lumen::ddc::InputProtocol;
-use muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 
 pub const REFRESH: &str = "refresh";
 pub const QUIT: &str = "quit";
@@ -130,8 +130,8 @@ fn display_menu(model: &Model, display: &DisplayEntry) -> Submenu {
 }
 
 /// Turns a menu id back into the action it stands for.
-pub fn parse(id: &MenuId) -> Option<Action> {
-    let raw = id.as_ref();
+pub fn parse(id: &str) -> Option<Action> {
+    let raw = id;
     match raw {
         REFRESH => return Some(Action::Refresh),
         QUIT => return Some(Action::Quit),
