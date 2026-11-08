@@ -59,6 +59,13 @@ impl InputSetting {
     }
 }
 
+/// The input the Mac itself is plugged into, remembered across launches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CurrentInput {
+    pub value: u16,
+    pub protocol: Protocol,
+}
+
 /// A display this app released and has not brought back yet. Kept on disk so a crash cannot
 /// leave the output switched off until logout.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,6 +82,10 @@ pub struct DisplayConfig {
     pub name: String,
     pub show_in_menu: bool,
     pub inputs: Vec<InputSetting>,
+    /// The input this Mac is plugged into, so the menu can mark it even on monitors that do not
+    /// report their input (this LG answers `VCP 0x60` with zero).
+    #[serde(default)]
+    pub current_input: Option<CurrentInput>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -147,6 +158,7 @@ impl Config {
                         name: display.name.clone(),
                         show_in_menu: true,
                         inputs: display.inputs.iter().map(InputSetting::from_detected).collect(),
+                        current_input: None,
                     });
                     changed = true;
                 }
@@ -188,6 +200,22 @@ impl Config {
             entry.inputs = detected.iter().map(InputSetting::from_detected).collect();
         }
         self.save();
+    }
+
+    /// The remembered Mac-side input, if one has been set.
+    pub fn current_input(&self, key: &str) -> Option<CurrentInput> {
+        self.display(key).and_then(|entry| entry.current_input)
+    }
+
+    /// Records the input the Mac is plugged into. Saves only when it actually changes.
+    pub fn set_current_input(&mut self, key: &str, value: u16, protocol: Protocol) {
+        let wanted = CurrentInput { value, protocol };
+        if let Some(entry) = self.display_mut(key) {
+            if entry.current_input != Some(wanted) {
+                entry.current_input = Some(wanted);
+                self.save();
+            }
+        }
     }
 
     pub fn enabled_inputs(&self, key: &str) -> Vec<InputSetting> {

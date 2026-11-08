@@ -12,11 +12,13 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{msg_send, sel};
 use objc2_app_kit::{
-    NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontWeightMedium,
-    NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar, NSTickMarkPosition,
-    NSStatusItem, NSSlider, NSTextField, NSVariableStatusItemLength, NSView,
+    NSColor, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSFontAttributeName,
+    NSFontWeightMedium, NSFontWeightRegular, NSImage, NSMenu, NSMenuItem, NSStatusBar,
+    NSTickMarkPosition, NSStatusItem, NSSlider, NSTextField, NSVariableStatusItemLength, NSView,
 };
-use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{
+    MainThreadMarker, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSSize, NSString,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -94,6 +96,27 @@ fn action_item(title: &str, id: &str, checked: bool, enabled: bool, actions: &Ac
         item.setEnabled(enabled);
         item
     }
+}
+
+/// An input row. The current input gets a checkmark and a bold title so it stands out even when
+/// the checkmark is easy to miss at menu size.
+fn input_item(title: &str, id: &str, current: bool, actions: &Actions) -> Retained<NSMenuItem> {
+    let item = action_item(title, id, current, true, actions);
+    if current {
+        unsafe {
+            let text = NSString::from_str(title);
+            let attributed = NSMutableAttributedString::initWithString(mtm().alloc(), &text);
+            let font = NSFont::boldSystemFontOfSize(13.0);
+            let _: () = msg_send![
+                &attributed,
+                addAttribute: NSFontAttributeName,
+                value: &*font,
+                range: NSRange::new(0, text.length())
+            ];
+            item.setAttributedTitle(Some(&attributed));
+        }
+    }
+    item
 }
 
 fn separator() -> Retained<NSMenuItem> {
@@ -234,12 +257,11 @@ fn fill_display(submenu: &NSMenu, model: &Model, display: &DisplayEntry, actions
         } else {
             submenu.addItem(&plain_item("Switch input (DDC, if supported)", false));
             for input in inputs {
-                let checked = model.is_current(display, input.value, input.protocol);
-                submenu.addItem(&action_item(
+                let current = model.is_current(display, input.value, input.protocol);
+                submenu.addItem(&input_item(
                     &format!("{} ({})", input.label, input.protocol.label()),
                     &menu::switch_id(display.id, input.value, input.protocol.to_ddc()),
-                    checked,
-                    true,
+                    current,
                     actions,
                 ));
             }
