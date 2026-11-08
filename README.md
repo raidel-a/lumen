@@ -33,7 +33,8 @@ Requires macOS 14+ on Apple silicon. No accessibility, screen recording, or root
 
 ## How the app is put together
 
-- **Status item and menu**: Lumen owns its `NSStatusItem` and `NSMenu` directly (no tray library).
+- **Status item and menu**: the menu bar shows the `sparkles.tv` SF Symbol as a template image, so
+  it follows light/dark appearance. Lumen owns its `NSStatusItem` and `NSMenu` directly (no tray library).
   The menu rebuilds itself in `menuNeedsUpdate:` each time it opens, and its control rows are
   custom item views holding real `NSSlider`s, so brightness, contrast and volume can be dragged
   right in the menu. Sliders sit in the display's own menu rather than a nested submenu, because
@@ -121,6 +122,9 @@ Verified round trip on the LG.
 - While released, the display is gone from System Settings (macOS isn't driving it). Quitting
   Lumen reclaims it; if the app is force-quit while a display is released, log out and back in
   (or re-plug the cable) to get it back.
+- The LG stops answering VCP reads for a moment after the capabilities string is fetched (it takes
+  several chunks), so a scan reads brightness, contrast and volume first and the input list last.
+  In the other order those control reads come back empty and the menu loses its sliders.
 - The settings window is fixed-size; dynamic resizing would need Auto Layout constraints.
 
 ## Roadmap

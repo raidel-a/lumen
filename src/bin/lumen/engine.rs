@@ -27,7 +27,8 @@ pub struct DisplayEntry {
 pub fn scan() -> Vec<DisplayEntry> {
     let mut displays = Vec::new();
     for mut display in Display::enumerate() {
-        let inputs = display.input_candidates();
+        // Read the control values before the input list: the capabilities string is fetched in
+        // several chunks, and this LG stops answering VCP reads for a moment afterwards.
         let brightness = display.read_vcp(VCP_BRIGHTNESS).ok().map(|v| (v.value, v.max));
         let contrast = display.read_vcp(VCP_CONTRAST).ok().map(|v| (v.value, v.max));
         let volume = display.read_vcp(VCP_VOLUME).ok().map(|v| (v.value, v.max));
@@ -45,6 +46,8 @@ pub fn scan() -> Vec<DisplayEntry> {
             .ok()
             .map(|v| v.value)
             .filter(|value| *value > 0);
+        let inputs = display.input_candidates();
+
         displays.push(DisplayEntry {
             id: display.id,
             key: display.identity_key(),

@@ -38,7 +38,7 @@ pub fn init(actions: &Actions) {
         let item = bar.statusItemWithLength(NSVariableStatusItemLength);
         if let Some(button) = item.button(mtm()) {
             if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str("display.and.screwdriver"),
+                &NSString::from_str("sparkles.tv"),
                 None,
             ) {
                 image.setTemplate(true);
