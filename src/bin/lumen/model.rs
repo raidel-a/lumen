@@ -60,15 +60,40 @@ impl Model {
 
     pub fn remember_input(&mut self, key: &str, value: u16, protocol: Protocol) {
         self.last_input.insert(key.to_string(), (value, protocol));
+        self.config.set_current_input(key, value, protocol);
     }
 
-    /// Whether this input is the one the display is on now, from the monitor's own report or
-    /// from the last switch this app made.
-    pub fn is_current(&self, display: &DisplayEntry, value: u16, protocol: Protocol) -> bool {
-        if self.last_input.get(&display.key) == Some(&(value, protocol)) {
-            return true;
+    /// The input the display is showing, best effort:
+    ///
+    /// 1. what the monitor reports through `VCP 0x60`, when it answers;
+    /// 2. the input this app last switched it to, remembered on disk;
+    /// 3. the first enabled input, which is the usual Mac-side port.
+    ///
+    /// Step 3 matters here because the LG reports `0x60` as zero and ignores input-select writes.
+    pub fn current_input(&self, display: &DisplayEntry) -> Option<(u16, Protocol)> {
+        let enabled = self.config.enabled_inputs(&display.key);
+        let has = |value: u16, protocol: Protocol| {
+            enabled
+                .iter()
+                .any(|input| input.value == value && input.protocol == protocol)
+        };
+
+        if let Some(reported) = display.current_input {
+            if has(reported, Protocol::Standard) {
+                return Some((reported, Protocol::Standard));
+            }
         }
-        protocol == Protocol::Standard && display.current_input == Some(value)
+        if let Some(saved) = self.config.current_input(&display.key) {
+            if has(saved.value, saved.protocol) {
+                return Some((saved.value, saved.protocol));
+            }
+        }
+        enabled.first().map(|input| (input.value, input.protocol))
+    }
+
+    /// Whether this input is the one the display is on now.
+    pub fn is_current(&self, display: &DisplayEntry, value: u16, protocol: Protocol) -> bool {
+        self.current_input(display) == Some((value, protocol))
     }
 
     pub fn released(&self, key: &str) -> bool {

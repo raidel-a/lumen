@@ -111,6 +111,11 @@ report `VCP 0x60` as bogus (max 18, current `0x00`) and ignore every input-selec
 standard and LG-alt addressing and from every third-party tool. Their firmware only switches when
 the current signal disappears.
 
+The display submenu marks the input the Mac is on: bold title plus checkmark. The monitor's own
+report (`VCP 0x60`) wins when it answers, then the input this app last switched to, remembered in
+`config.json`, then the first enabled input. The fallback exists because the LG answers `0x60`
+with zero and ignores input-select writes, so nothing else would ever be marked.
+
 Release stops macOS from driving the display's output. With the monitor's OSD **Auto Input
 Switch** enabled, the monitor locks onto whichever HDMI/DP input still has a live signal.
 **Bring <display> back** drives the output again and the monitor follows the returning signal.
