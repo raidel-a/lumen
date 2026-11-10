@@ -17,7 +17,8 @@ use objc2_app_kit::{
     NSApplicationDidChangeScreenParametersNotification, NSAutoresizingMaskOptions, NSBackingStoreType,
     NSBox, NSBoxType, NSButton, NSColor, NSControl, NSControlStateValueOff, NSControlStateValueOn,
     NSFont, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSImageView,
-    NSLayoutAttribute, NSStackView, NSStackViewDistribution, NSUserInterfaceLayoutOrientation,
+    NSLayoutAttribute, NSLayoutConstraintOrientation, NSStackView, NSStackViewDistribution,
+    NSUserInterfaceLayoutOrientation,
     NSAccessibility, NSForegroundColorAttributeName, NSLineBreakMode,
     NSMenu, NSMenuDelegate,
     NSPasteboard, NSPasteboardTypeString,
@@ -37,7 +38,6 @@ const MIN_WIDTH: f64 = 880.0;
 const MIN_HEIGHT: f64 = 500.0;
 const SIDEBAR: f64 = 200.0;
 const MARGIN: f64 = 28.0;
-const ROW: f64 = 54.0;
 
 const PAGES: [&str; 4] = ["General", "Displays", "Virtual Displays", "About"];
 
@@ -224,18 +224,6 @@ fn tag(control: &NSControl, value: isize) {
     unsafe { control.setTag(value) };
 }
 
-fn stretch(control: &NSView) {
-    unsafe {
-        control.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
-    }
-}
-
-fn pin_right(control: &NSView) {
-    unsafe {
-        control.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewMinXMargin);
-    }
-}
-
 fn pin_top(control: &NSView) {
     unsafe {
         control.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewMinYMargin);
@@ -385,20 +373,6 @@ fn card_box(theme: &Theme, parent: &NSView, rect: NSRect) -> Retained<NSBox> {
     }
 }
 
-fn separator_line(theme: &Theme, parent: &NSView, rect: NSRect) {
-    unsafe {
-        let line = NSBox::initWithFrame(mtm().alloc(), rect);
-        line.setBoxType(NSBoxType::NSBoxCustom);
-        line.setTitlePosition(NSTitlePosition::NSNoTitle);
-        line.setBorderWidth(0.0);
-        line.setCornerRadius(0.0);
-        line.setFillColor(&theme.border);
-        line.setBorderColor(&theme.border);
-        stretch(&line);
-        parent.addSubview(&line);
-    }
-}
-
 /// Soft rounded background used for the selected sidebar or display row.
 unsafe fn selection_background(parent: &NSView, rect: NSRect) -> Retained<NSBox> {
     let bg = NSBox::initWithFrame(mtm().alloc(), rect);
@@ -442,334 +416,6 @@ impl FlippedView {
     }
 }
 
-/// Builds one page from the top down and reports the height it used.
-struct PageBuilder<'a> {
-    doc: &'a NSView,
-    theme: Theme,
-    width: f64,
-    y: f64,
-}
-
-impl<'a> PageBuilder<'a> {
-    fn new(doc: &'a NSView, theme: &Theme, width: f64) -> Self {
-        Self {
-            doc,
-            theme: theme.clone(),
-            width,
-            y: MARGIN,
-        }
-    }
-
-    unsafe fn section(&mut self, title: &str) {
-        if self.y > MARGIN {
-            self.y += 10.0;
-        }
-        self.doc.addSubview(&label(
-            title,
-            11.0,
-            NSFontWeightSemibold,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(MARGIN, self.y), NSSize::new(self.width - MARGIN * 2.0, 14.0)),
-        ));
-        self.y += 24.0;
-    }
-
-    /// A section header with a button on the trailing edge. Returns the button.
-    unsafe fn section_button(
-        &mut self,
-        title: &str,
-        button_title: &str,
-        enabled: bool,
-        action: objc2::runtime::Sel,
-    ) -> Retained<NSButton> {
-        if self.y > MARGIN {
-            self.y += 10.0;
-        }
-        self.doc.addSubview(&label(
-            title,
-            11.0,
-            NSFontWeightSemibold,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(MARGIN, self.y), NSSize::new(self.width - MARGIN * 2.0, 14.0)),
-        ));
-        let b = button(
-            button_title,
-            &self.doc,
-            NSRect::new(
-                NSPoint::new(self.width - MARGIN - 140.0, self.y - 5.0),
-                NSSize::new(140.0, 24.0),
-            ),
-            true,
-            action,
-        );
-        b.setEnabled(enabled);
-        pin_right(&b);
-        self.y += 24.0;
-        b
-    }
-
-    fn group(&self) -> Group<'a> {
-        Group::new(self.doc, &self.theme, self.width, self.y)
-    }
-
-    fn end(&mut self, group: Group<'a>) {
-        self.y = group.finish();
-    }
-
-    unsafe fn note(&mut self, text: &str) {
-        let height = 30.0;
-        self.doc.addSubview(&paragraph(
-            text,
-            11.0,
-            &self.theme.secondary,
-            NSRect::new(
-                NSPoint::new(MARGIN + 2.0, self.y),
-                NSSize::new(self.width - MARGIN * 2.0 - 4.0, height),
-            ),
-        ));
-        self.y += height + 10.0;
-    }
-
-    /// Extra vertical room before the next block.
-    fn gap(&mut self, height: f64) {
-        self.y += height;
-    }
-}
-
-struct Group<'a> {
-    doc: &'a NSView,
-    theme: Theme,
-    box_: Retained<NSBox>,
-    left: f64,
-    right: f64,
-    top: f64,
-    y: f64,
-    width: f64,
-}
-
-impl<'a> Group<'a> {
-    fn new(doc: &'a NSView, theme: &Theme, page_width: f64, top: f64) -> Self {
-        let width = page_width - MARGIN * 2.0;
-        let bx = card_box(
-            theme,
-            doc,
-            NSRect::new(NSPoint::new(MARGIN, top), NSSize::new(width, 1.0)),
-        );
-        stretch(&bx);
-        Self {
-            doc,
-            theme: theme.clone(),
-            box_: bx,
-            left: MARGIN + 16.0,
-            right: MARGIN + width - 16.0,
-            top,
-            y: top + 6.0,
-            width,
-        }
-    }
-
-    fn separator(&mut self) {
-        separator_line(
-            &self.theme,
-            self.doc,
-            NSRect::new(
-                NSPoint::new(self.left, self.y),
-                NSSize::new(self.width - 32.0, 1.0),
-            ),
-        );
-        self.y += 1.0;
-    }
-
-    unsafe fn toggle(
-        &mut self,
-        title: &str,
-        detail: &str,
-        on: bool,
-        action: objc2::runtime::Sel,
-    ) -> Retained<NSSwitch> {
-        let text_width = self.right - self.left - 70.0;
-        let title_field = label(
-            title,
-            13.0,
-            NSFontWeightMedium,
-            &self.theme.text,
-            NSRect::new(NSPoint::new(self.left, self.y + 8.0), NSSize::new(text_width, 18.0)),
-        );
-        stretch(&title_field);
-        self.doc.addSubview(&title_field);
-        let detail_field = label(
-            detail,
-            11.0,
-            NSFontWeightRegular,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(self.left, self.y + 27.0), NSSize::new(text_width, 16.0)),
-        );
-        stretch(&detail_field);
-        self.doc.addSubview(&detail_field);
-        let sw = switch(
-            on,
-            &self.doc,
-            NSRect::new(
-                NSPoint::new(self.right - 38.0, self.y + 16.0),
-                NSSize::new(38.0, 22.0),
-            ),
-            action,
-        );
-        pin_right(&sw);
-        unsafe {
-            sw.setAccessibilityLabel(Some(&NSString::from_str(title)));
-        }
-        self.y += ROW;
-        sw
-    }
-
-    unsafe fn popup(
-        &mut self,
-        title: &str,
-        detail: &str,
-        items: &[&str],
-        selected: usize,
-        action: objc2::runtime::Sel,
-    ) -> Retained<NSPopUpButton> {
-        let text_width = self.right - self.left - 190.0;
-        let title_field = label(
-            title,
-            13.0,
-            NSFontWeightMedium,
-            &self.theme.text,
-            NSRect::new(NSPoint::new(self.left, self.y + 8.0), NSSize::new(text_width, 18.0)),
-        );
-        stretch(&title_field);
-        self.doc.addSubview(&title_field);
-        let detail_field = label(
-            detail,
-            11.0,
-            NSFontWeightRegular,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(self.left, self.y + 27.0), NSSize::new(text_width, 16.0)),
-        );
-        stretch(&detail_field);
-        self.doc.addSubview(&detail_field);
-        let p = popup(
-            &self.doc,
-            NSRect::new(
-                NSPoint::new(self.right - 170.0, self.y + 14.0),
-                NSSize::new(170.0, 26.0),
-            ),
-            items,
-            selected,
-            action,
-        );
-        pin_right(&p);
-        unsafe {
-            p.setAccessibilityLabel(Some(&NSString::from_str(title)));
-        }
-        self.y += ROW;
-        p
-    }
-
-    unsafe fn field(
-        &mut self,
-        title: &str,
-        detail: &str,
-        value: &str,
-        placeholder: &str,
-        width: f64,
-        tag_value: isize,
-    ) -> Retained<NSTextField> {
-        let text_width = self.right - self.left - width - 20.0;
-        let title_field = label(
-            title,
-            13.0,
-            NSFontWeightMedium,
-            &self.theme.text,
-            NSRect::new(NSPoint::new(self.left, self.y + 8.0), NSSize::new(text_width, 18.0)),
-        );
-        stretch(&title_field);
-        self.doc.addSubview(&title_field);
-        let detail_field = label(
-            detail,
-            11.0,
-            NSFontWeightRegular,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(self.left, self.y + 27.0), NSSize::new(text_width, 16.0)),
-        );
-        stretch(&detail_field);
-        self.doc.addSubview(&detail_field);
-        let f = text_field(
-            value,
-            &self.doc,
-            NSRect::new(
-                NSPoint::new(self.right - width, self.y + 14.0),
-                NSSize::new(width, 26.0),
-            ),
-            Some(placeholder),
-        );
-        f.setTag(tag_value);
-        pin_right(&f);
-        self.y += ROW;
-        f
-    }
-
-
-    /// One brightness-style slider with a live percentage on the right.
-    unsafe fn slider(
-        &mut self,
-        title: &str,
-        value: u16,
-        max: u16,
-        tag_value: isize,
-    ) -> Retained<NSTextField> {
-        self.doc.addSubview(&label(
-            title,
-            12.0,
-            NSFontWeightMedium,
-            &self.theme.text,
-            NSRect::new(NSPoint::new(self.left, self.y + 9.0), NSSize::new(100.0, 18.0)),
-        ));
-        let slider = unsafe {
-            let slider = NSSlider::initWithFrame(
-                mtm().alloc(),
-                NSRect::new(
-                    NSPoint::new(self.left + 110.0, self.y + 6.0),
-                    NSSize::new(self.right - self.left - 180.0, 22.0),
-                ),
-            );
-            slider.setMinValue(0.0);
-            slider.setMaxValue(max.max(1) as f64);
-            slider.setDoubleValue(value as f64);
-            slider.setContinuous(true);
-            slider.setNumberOfTickMarks(5);
-            slider.setAllowsTickMarkValuesOnly(false);
-            slider.setTickMarkPosition(NSTickMarkPosition::Below);
-            slider.setTag(tag_value);
-            wire(&slider, sel!(controlChanged:));
-            self.doc.addSubview(&slider);
-            slider
-        };
-        stretch(&slider);
-        let text = label(
-            &format!("{}%", percent_of(value, max)),
-            11.0,
-            NSFontWeightRegular,
-            &self.theme.secondary,
-            NSRect::new(NSPoint::new(self.right - 56.0, self.y + 9.0), NSSize::new(56.0, 16.0)),
-        );
-        pin_right(&text);
-        self.doc.addSubview(&text);
-        self.y += 36.0;
-        text
-    }
-
-    fn finish(self) -> f64 {
-        let height = (self.y - self.top) + 6.0;
-        unsafe {
-            self.box_.setFrameSize(NSSize::new(self.width, height));
-        }
-        self.top + height + 18.0
-    }
-}
-
 fn percent_of(value: u16, max: u16) -> u32 {
     if max == 0 {
         return 0;
@@ -786,28 +432,304 @@ fn key_of_selected(model: &Model) -> Option<String> {
     })
 }
 
-unsafe fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
-    let mut pb = PageBuilder::new(parent, theme, parent.frame().size.width);
+unsafe fn auto_layout(view: &NSView) {
+    view.setTranslatesAutoresizingMaskIntoConstraints(false);
+}
 
-    pb.section("Menu Bar");
-    let mut group = pb.group();
-    group.toggle(
+unsafe fn fix_height(view: &NSView, height: f64) {
+    view.heightAnchor().constraintEqualToConstant(height).setActive(true);
+}
+
+unsafe fn fix_width(view: &NSView, width: f64) {
+    view.widthAnchor().constraintEqualToConstant(width).setActive(true);
+}
+
+unsafe fn pin_edges(view: &NSView, parent: &NSView, top: f64, bottom: f64, leading: f64, trailing: f64) {
+    view.topAnchor().constraintEqualToAnchor_constant(&parent.topAnchor(), top).setActive(true);
+    view.bottomAnchor().constraintEqualToAnchor_constant(&parent.bottomAnchor(), bottom).setActive(true);
+    view.leadingAnchor().constraintEqualToAnchor_constant(&parent.leadingAnchor(), leading).setActive(true);
+    view.trailingAnchor().constraintEqualToAnchor_constant(&parent.trailingAnchor(), trailing).setActive(true);
+}
+
+unsafe fn vstack() -> Retained<NSStackView> {
+    let stack = NSStackView::new(mtm());
+    auto_layout(&stack);
+    stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
+    stack.setAlignment(NSLayoutAttribute::Width);
+    stack.setDistribution(NSStackViewDistribution::GravityAreas);
+    stack.setSpacing(0.0);
+    stack
+}
+
+unsafe fn hstack() -> Retained<NSStackView> {
+    let stack = NSStackView::new(mtm());
+    auto_layout(&stack);
+    stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+    stack.setAlignment(NSLayoutAttribute::CenterY);
+    stack.setDistribution(NSStackViewDistribution::GravityAreas);
+    stack.setSpacing(8.0);
+    stack
+}
+
+unsafe fn auto_label(text: &str, size: f64, weight: f64, color: &NSColor) -> Retained<NSTextField> {
+    let field = label(text, size, weight, color, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&field);
+    field.setAlignment(NSTextAlignment::Left);
+    field
+}
+
+unsafe fn auto_paragraph(text: &str, size: f64, color: &NSColor) -> Retained<NSTextField> {
+    let field = paragraph(text, size, color, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&field);
+    field.setAlignment(NSTextAlignment::Left);
+    field
+}
+
+unsafe fn paragraph_row(text: &str, size: f64, color: &NSColor, width: f64) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_width(&row, width);
+    let body = auto_paragraph(text, size, color);
+    body.setPreferredMaxLayoutWidth(width);
+    row.addSubview(&body);
+    body.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    body.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    body.topAnchor().constraintEqualToAnchor(&row.topAnchor()).setActive(true);
+    body.bottomAnchor().constraintEqualToAnchor(&row.bottomAnchor()).setActive(true);
+    row
+}
+
+unsafe fn auto_separator(theme: &Theme) -> Retained<NSBox> {
+    let line = NSBox::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 1.0)));
+    line.setBoxType(NSBoxType::NSBoxCustom);
+    line.setTitlePosition(NSTitlePosition::NSNoTitle);
+    line.setBorderWidth(0.0);
+    line.setCornerRadius(0.0);
+    line.setFillColor(&theme.border);
+    line.setBorderColor(&theme.border);
+    auto_layout(&line);
+    fix_height(&line, 1.0);
+    line
+}
+
+unsafe fn section_heading(title: &str, theme: &Theme) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 16.0);
+    let label = auto_label(title, 11.0, NSFontWeightSemibold, &theme.secondary);
+    row.addSubview(&label);
+    label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    row
+}
+
+unsafe fn hug_height(view: &NSView) {
+    view.setContentHuggingPriority_forOrientation(750.0, NSLayoutConstraintOrientation::Vertical);
+}
+
+unsafe fn finish_page(stack: &NSStackView) {
+    let spacer = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&spacer);
+    spacer.heightAnchor().constraintGreaterThanOrEqualToConstant(0.0).setActive(true);
+    spacer.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Vertical);
+    stack.addArrangedSubview(&spacer);
+}
+
+unsafe fn group_container(theme: &Theme, rows: Vec<Retained<NSView>>) -> Retained<NSView> {
+    let container = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&container);
+    let background = card_box(theme, &container, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&background);
+    pin_edges(&background, &container, 0.0, 0.0, 0.0, 0.0);
+    let stack = vstack();
+    container.addSubview(&stack);
+    pin_edges(&stack, &container, 6.0, -6.0, 16.0, -16.0);
+    let count = rows.len();
+    for (index, row) in rows.into_iter().enumerate() {
+        stack.addArrangedSubview(&row);
+        if index + 1 < count {
+            stack.addArrangedSubview(&auto_separator(theme));
+        }
+    }
+    container
+}
+
+unsafe fn finish_row(
+    row: &NSView,
+    theme: &Theme,
+    title: &str,
+    detail: &str,
+    control: &NSView,
+    control_width: Option<f64>,
+) {
+    fix_height(row, 56.0);
+    let title = auto_label(title, 13.0, NSFontWeightMedium, &theme.text);
+    let detail = auto_label(detail, 11.0, NSFontWeightRegular, &theme.secondary);
+    row.addSubview(&title);
+    row.addSubview(&detail);
+    row.addSubview(control);
+    auto_layout(control);
+    if let Some(width) = control_width {
+        fix_width(control, width);
+    }
+    title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    title.topAnchor().constraintEqualToAnchor_constant(&row.topAnchor(), 8.0).setActive(true);
+    title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0).setActive(true);
+    detail.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    detail.topAnchor().constraintEqualToAnchor_constant(&title.bottomAnchor(), 2.0).setActive(true);
+    detail.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0).setActive(true);
+    control.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    control.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+}
+
+unsafe fn row_toggle(theme: &Theme, title: &str, detail: &str, on: bool, action: objc2::runtime::Sel) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    let control = switch(on, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), action);
+    control.setAccessibilityLabel(Some(&NSString::from_str(title)));
+    finish_row(&row, theme, title, detail, &control, None);
+    row
+}
+
+unsafe fn row_popup(theme: &Theme, title: &str, detail: &str, items: &[&str], selected: usize, action: objc2::runtime::Sel) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    let control = popup(&row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), items, selected, action);
+    finish_row(&row, theme, title, detail, &control, Some(170.0));
+    row
+}
+
+unsafe fn section_with_button(theme: &Theme, title: &str, button_title: &str, enabled: bool, action: objc2::runtime::Sel) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 24.0);
+    let label = auto_label(title, 11.0, NSFontWeightSemibold, &theme.secondary);
+    row.addSubview(&label);
+    label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    let button = button(button_title, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, action);
+    auto_layout(&button);
+    fix_width(&button, 140.0);
+    fix_height(&button, 24.0);
+    button.setEnabled(enabled);
+    button.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    button.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    row
+}
+
+unsafe fn text_field_auto(value: &str, parent: &NSView, width: f64, placeholder: Option<&str>) -> Retained<NSTextField> {
+    let field = text_field(value, parent, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), placeholder);
+    auto_layout(&field);
+    fix_width(&field, width);
+    fix_height(&field, 26.0);
+    field
+}
+
+unsafe fn number_field_auto(value: &str, parent: &NSView, width: f64, tag_value: isize) -> Retained<NSTextField> {
+    let field = number_field(value, parent, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), tag_value);
+    auto_layout(&field);
+    fix_width(&field, width);
+    fix_height(&field, 24.0);
+    field
+}
+
+unsafe fn row_field_save(theme: &Theme, title: &str, detail: &str, value: &str, action: objc2::runtime::Sel) -> (Retained<NSView>, Retained<NSTextField>) {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    let bar = hstack();
+    let field = text_field_auto(value, &bar, 220.0, Some("about:blank"));
+    let save = button("Save", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, action);
+    auto_layout(&save);
+    fix_width(&save, 60.0);
+    fix_height(&save, 26.0);
+    bar.addArrangedSubview(&field);
+    bar.addArrangedSubview(&save);
+    finish_row(&row, theme, title, detail, &bar, Some(288.0));
+    (row, field)
+}
+
+unsafe fn row_text_button(theme: &Theme, title: &str, detail: &str, button_title: &str, action: objc2::runtime::Sel) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 56.0);
+    let title = auto_label(title, 13.0, NSFontWeightMedium, &theme.text);
+    let detail = auto_label(detail, 11.0, NSFontWeightRegular, &theme.secondary);
+    let control = button(button_title, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, action);
+    auto_layout(&control);
+    fix_width(&control, 76.0);
+    fix_height(&control, 24.0);
+    row.addSubview(&title);
+    row.addSubview(&detail);
+    title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    title.topAnchor().constraintEqualToAnchor_constant(&row.topAnchor(), 8.0).setActive(true);
+    title.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0).setActive(true);
+    detail.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    detail.topAnchor().constraintEqualToAnchor_constant(&title.bottomAnchor(), 2.0).setActive(true);
+    detail.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0).setActive(true);
+    control.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    control.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    row
+}
+
+unsafe fn row_key_value(theme: &Theme, key: &str, value: &str) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 36.0);
+    let key = auto_label(key, 13.0, NSFontWeightMedium, &theme.text);
+    let value = auto_label(value, 12.0, NSFontWeightRegular, &theme.secondary);
+    value.setAlignment(NSTextAlignment::Right);
+    row.addSubview(&key);
+    row.addSubview(&value);
+    key.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    key.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    value.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    value.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    key.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&value.leadingAnchor(), -12.0).setActive(true);
+    row
+}
+
+unsafe fn page_stack(host: &NSView) -> (Retained<NSScrollView>, Retained<NSStackView>) {
+    let bounds = host.bounds();
+    let scroll = NSScrollView::initWithFrame(mtm().alloc(), bounds);
+    scroll.setHasVerticalScroller(true);
+    scroll.setDrawsBackground(false);
+    scroll.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable | NSAutoresizingMaskOptions::NSViewHeightSizable);
+    host.addSubview(&scroll);
+    let doc = FlippedView::new(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&doc);
+    scroll.setDocumentView(Some(&doc));
+    let clip = scroll.contentView();
+    doc.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
+    doc.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
+    doc.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
+    doc.heightAnchor().constraintGreaterThanOrEqualToAnchor(&clip.heightAnchor()).setActive(true);
+    let stack = vstack();
+    stack.setDistribution(NSStackViewDistribution::Fill);
+    doc.addSubview(&stack);
+    pin_edges(&stack, &doc, MARGIN, -MARGIN, MARGIN, -MARGIN);
+    (scroll, stack)
+}
+
+unsafe fn build_general(host: &NSView, model: &Model, theme: &Theme) {
+    let (scroll, stack) = page_stack(host);
+
+    let menu_heading = section_heading("Menu Bar", theme);
+    stack.addArrangedSubview(&menu_heading);
+    stack.setCustomSpacing_afterView(8.0, &menu_heading);
+    let menu = group_container(theme, vec![row_toggle(
+        theme,
         "Show brightness presets",
         "List 25, 50, 75 and 100 percent under each display in the menu.",
         model.config.show_brightness,
         sel!(toggleBrightness:),
-    );
-    pb.end(group);
+    )]);
+    hug_height(&menu);
+    stack.addArrangedSubview(&menu);
+    stack.setCustomSpacing_afterView(24.0, &menu);
 
-    pb.section("Displays");
-    let mut group = pb.group();
-    group.toggle(
-        "Reclaim displays on quit",
-        "Bring every released display back before Lumen exits.",
-        model.config.reclaim_on_quit,
-        sel!(toggleReclaim:),
-    );
-    group.separator();
+    let displays_heading = section_heading("Displays", theme);
+    stack.addArrangedSubview(&displays_heading);
+    stack.setCustomSpacing_afterView(8.0, &displays_heading);
     let current = match model.config.auto_reclaim_minutes {
         None => 0,
         Some(1) => 1,
@@ -815,16 +737,30 @@ unsafe fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
         Some(15) => 3,
         Some(_) => 4,
     };
-    group.popup(
-        "Auto-reclaim",
-        "Bring a released display back by itself after a while.",
-        &["Off", "After 1 minute", "After 5 minutes", "After 15 minutes", "After 30 minutes"],
-        current,
-        sel!(autoReclaim:),
-    );
-    pb.end(group);
+    let displays = group_container(theme, vec![
+        row_toggle(
+            theme,
+            "Reclaim displays on quit",
+            "Bring every released display back before Lumen exits.",
+            model.config.reclaim_on_quit,
+            sel!(toggleReclaim:),
+        ),
+        row_popup(
+            theme,
+            "Auto-reclaim",
+            "Bring a released display back by itself after a while.",
+            &["Off", "After 1 minute", "After 5 minutes", "After 15 minutes", "After 30 minutes"],
+            current,
+            sel!(autoReclaim:),
+        ),
+    ]);
+    hug_height(&displays);
+    stack.addArrangedSubview(&displays);
+    stack.setCustomSpacing_afterView(24.0, &displays);
 
-    pb.section("Startup");
+    let startup_heading = section_heading("Startup", theme);
+    stack.addArrangedSubview(&startup_heading);
+    stack.setCustomSpacing_afterView(8.0, &startup_heading);
     let status = crate::login::status();
     let (detail, on) = match status {
         crate::login::Status::Enabled => ("Starts Lumen when you log in.", true),
@@ -836,63 +772,387 @@ unsafe fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
         crate::login::Status::Unavailable => ("Login items need macOS 13 or later.", false),
         _ => ("Starts Lumen when you log in.", false),
     };
-    let mut group = pb.group();
-    group.toggle("Launch at login", detail, on, sel!(toggleLoginItem:));
-    pb.end(group);
+    let startup = group_container(theme, vec![row_toggle(
+        theme,
+        "Launch at login",
+        detail,
+        on,
+        sel!(toggleLoginItem:),
+    )]);
+    hug_height(&startup);
+    stack.addArrangedSubview(&startup);
     if let Some(note) = UI.with(|ui| ui.borrow().login_note.clone()) {
-        pb.note(&note);
+        let note = paragraph_row(&note, 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+        stack.setCustomSpacing_afterView(8.0, &startup);
+        stack.addArrangedSubview(&note);
+        stack.setCustomSpacing_afterView(24.0, &note);
+    } else {
+        stack.setCustomSpacing_afterView(24.0, &startup);
     }
 
-    pb.section("Settings Window");
-    let mut group = pb.group();
+    let window_heading = section_heading("Settings Window", theme);
+    stack.addArrangedSubview(&window_heading);
+    stack.setCustomSpacing_afterView(8.0, &window_heading);
     let index = match model.config.settings_display {
         SettingsDisplay::Invocation => 0,
         SettingsDisplay::Agent => 1,
         SettingsDisplay::Main => 2,
         SettingsDisplay::Last => 3,
     };
-    group.popup(
+    let window = group_container(theme, vec![row_popup(
+        theme,
         "Open on",
         "Where Settings appears when you choose it from the menu.",
         &["Display I click from", "Agent", "Main display", "Last display"],
         index,
         sel!(settingsDisplay:),
+    )]);
+    hug_height(&window);
+    stack.addArrangedSubview(&window);
+    finish_page(&stack);
+
+    UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
+}
+
+unsafe fn slider_row(theme: &Theme, title: &str, value: u16, max: u16, tag_value: isize) -> (Retained<NSView>, Retained<NSTextField>) {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 40.0);
+    let label = auto_label(title, 12.0, NSFontWeightMedium, &theme.text);
+    let slider = NSSlider::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 22.0)));
+    auto_layout(&slider);
+    slider.setMinValue(0.0);
+    slider.setMaxValue(max.max(1) as f64);
+    slider.setDoubleValue(value as f64);
+    slider.setContinuous(true);
+    slider.setNumberOfTickMarks(5);
+    slider.setAllowsTickMarkValuesOnly(false);
+    slider.setTickMarkPosition(NSTickMarkPosition::Below);
+    slider.setTag(tag_value);
+    wire(&slider, sel!(controlChanged:));
+    let readout = auto_label(&format!("{}%", percent_of(value, max)), 11.0, NSFontWeightRegular, &theme.secondary);
+    readout.setAlignment(NSTextAlignment::Right);
+    row.addSubview(&label);
+    row.addSubview(&slider);
+    row.addSubview(&readout);
+    label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    slider.leadingAnchor().constraintEqualToAnchor_constant(&label.trailingAnchor(), 12.0).setActive(true);
+    slider.trailingAnchor().constraintEqualToAnchor_constant(&readout.leadingAnchor(), -12.0).setActive(true);
+    slider.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    slider.heightAnchor().constraintEqualToConstant(22.0).setActive(true);
+    readout.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    readout.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    readout.widthAnchor().constraintEqualToConstant(56.0).setActive(true);
+    (row, readout)
+}
+
+unsafe fn input_row(theme: &Theme, index: usize, input: &InputSetting) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 38.0);
+    let cb = checkbox(input.enabled, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), sel!(toggleInput:));
+    auto_layout(&cb);
+    fix_width(&cb, 18.0);
+    fix_height(&cb, 18.0);
+    tag(&cb, index as isize);
+    cb.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    cb.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    if let Some((symbol, color)) = match input.verified {
+        Some(true) => Some(("checkmark.circle.fill", NSColor::systemGreenColor())),
+        Some(false) => Some(("xmark.circle", NSColor::systemRedColor())),
+        None => None,
+    } {
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(symbol), None) {
+            let view = NSImageView::new(mtm());
+            auto_layout(&view);
+            fix_width(&view, 14.0);
+            fix_height(&view, 14.0);
+            view.setImage(Some(&image));
+            view.setContentTintColor(Some(&color));
+            row.addSubview(&view);
+            view.leadingAnchor().constraintEqualToAnchor_constant(&cb.trailingAnchor(), 8.0).setActive(true);
+            view.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+        }
+    }
+    let label = auto_label(&input.label, 13.0, NSFontWeightMedium, if input.enabled { &theme.text } else { &theme.secondary });
+    fix_width(&label, 150.0);
+    let code = mono(&format!("{:#06x}", input.value), 11.0, &theme.secondary, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&code);
+    let protocol = button(input.protocol.label(), &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(cycleProtocol:));
+    auto_layout(&protocol);
+    fix_width(&protocol, 70.0);
+    fix_height(&protocol, 24.0);
+    tag(&protocol, index as isize);
+    protocol.setToolTip(Some(&NSString::from_str("Click to switch between standard DDC and the LG alternate protocol.")));
+    let test = button("Test", &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), false, sel!(testInput:));
+    auto_layout(&test);
+    fix_width(&test, 54.0);
+    fix_height(&test, 24.0);
+    tag(&test, index as isize);
+    let remove = button("×", &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), false, sel!(removeInput:));
+    auto_layout(&remove);
+    fix_width(&remove, 22.0);
+    fix_height(&remove, 24.0);
+    tag(&remove, index as isize);
+    row.addSubview(&label);
+    row.addSubview(&code);
+    label.leadingAnchor().constraintEqualToAnchor_constant(&cb.trailingAnchor(), 28.0).setActive(true);
+    label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    code.leadingAnchor().constraintEqualToAnchor_constant(&label.trailingAnchor(), 8.0).setActive(true);
+    code.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    remove.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+    remove.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    test.trailingAnchor().constraintEqualToAnchor_constant(&remove.leadingAnchor(), -8.0).setActive(true);
+    test.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    protocol.trailingAnchor().constraintEqualToAnchor_constant(&test.leadingAnchor(), -8.0).setActive(true);
+    protocol.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+    code.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&protocol.leadingAnchor(), -12.0).setActive(true);
+    row
+}
+
+unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
+    let (scroll, stack) = page_stack(host);
+    UI.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        ui.screen_names.clear();
+        ui.screen_widths.clear();
+        ui.screen_heights.clear();
+        ui.screen_refreshes.clear();
+        ui.screen_hidpi.clear();
+        ui.screen_auto.clear();
+        ui.agent_url = None;
+    });
+
+    let screens = crate::screens::list();
+    let at_cap = screens.len() >= crate::screens::MAX_SCREENS;
+    let new_row = section_with_button(theme, "Virtual Displays", "New Virtual Display", !at_cap, sel!(newScreen:));
+    if at_cap {
+        if let Some(button) = new_row.subviews().iter().find(|view| view.is_kind_of::<NSButton>()) {
+            let _: () = msg_send![&*button, setToolTip: &*NSString::from_str("Lumen supports up to four virtual displays.")];
+        }
+    }
+    stack.addArrangedSubview(&new_row);
+    stack.setCustomSpacing_afterView(8.0, &new_row);
+
+    if screens.is_empty() {
+        let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&row);
+        fix_height(&row, 62.0);
+        let title = auto_label("No virtual displays", 13.0, NSFontWeightMedium, &theme.text);
+        let detail = auto_paragraph(
+            "Create one for an agent workspace, a preview or a capture source. Displays exist only in memory.",
+            11.0,
+            &theme.secondary,
+        );
+        detail.setPreferredMaxLayoutWidth(host.bounds().size.width - MARGIN * 2.0 - 32.0);
+        row.addSubview(&title);
+        row.addSubview(&detail);
+        title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+        title.topAnchor().constraintEqualToAnchor_constant(&row.topAnchor(), 10.0).setActive(true);
+        detail.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+        detail.topAnchor().constraintEqualToAnchor_constant(&title.bottomAnchor(), 4.0).setActive(true);
+        detail.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
+        let group = group_container(theme, vec![row]);
+        hug_height(&group);
+        stack.addArrangedSubview(&group);
+        stack.setCustomSpacing_afterView(24.0, &group);
+    }
+
+    for (index, screen) in screens.iter().enumerate() {
+        let config = model.config.virtual_screen(&screen.name).cloned();
+        let refresh = config.as_ref().map(|config| config.refresh).unwrap_or(60.0);
+        let hidpi = config.as_ref().map(|config| config.hidpi).unwrap_or(false);
+        let auto = config.as_ref().map(|config| config.auto_create).unwrap_or(true);
+
+        let name_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&name_row);
+        fix_height(&name_row, 44.0);
+        let name_label = auto_label("Name", 11.0, NSFontWeightRegular, &theme.secondary);
+        let name = text_field_auto(&screen.name, &name_row, 200.0, None);
+        let summary = auto_label(
+            &format!(
+                "{}x{} at {},{}  ·  {}x  ·  {} Hz",
+                screen.width, screen.height, screen.x, screen.y, screen.scale, refresh
+            ),
+            11.0,
+            NSFontWeightRegular,
+            &theme.secondary,
+        );
+        name_row.addSubview(&name_label);
+        name_row.addSubview(&summary);
+        name_label.leadingAnchor().constraintEqualToAnchor(&name_row.leadingAnchor()).setActive(true);
+        name_label.centerYAnchor().constraintEqualToAnchor(&name_row.centerYAnchor()).setActive(true);
+        name.leadingAnchor().constraintEqualToAnchor_constant(&name_row.leadingAnchor(), 44.0).setActive(true);
+        name.centerYAnchor().constraintEqualToAnchor(&name_row.centerYAnchor()).setActive(true);
+        summary.leadingAnchor().constraintGreaterThanOrEqualToAnchor_constant(&name.trailingAnchor(), 12.0).setActive(true);
+        summary.trailingAnchor().constraintEqualToAnchor(&name_row.trailingAnchor()).setActive(true);
+        summary.centerYAnchor().constraintEqualToAnchor(&name_row.centerYAnchor()).setActive(true);
+
+        let geometry_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&geometry_row);
+        fix_height(&geometry_row, 40.0);
+        let bar = hstack();
+        bar.setSpacing(10.0);
+        geometry_row.addSubview(&bar);
+        bar.leadingAnchor().constraintEqualToAnchor(&geometry_row.leadingAnchor()).setActive(true);
+        bar.centerYAnchor().constraintEqualToAnchor(&geometry_row.centerYAnchor()).setActive(true);
+        bar.addArrangedSubview(&auto_label("W", 11.0, NSFontWeightRegular, &theme.secondary));
+        let width = number_field_auto(&screen.width.to_string(), &bar, 58.0, (index * 10 + 1) as isize);
+        bar.addArrangedSubview(&width);
+        bar.addArrangedSubview(&auto_label("H", 11.0, NSFontWeightRegular, &theme.secondary));
+        let height = number_field_auto(&screen.height.to_string(), &bar, 58.0, (index * 10 + 2) as isize);
+        bar.addArrangedSubview(&height);
+        bar.addArrangedSubview(&auto_label("Hz", 11.0, NSFontWeightRegular, &theme.secondary));
+        let hz = number_field_auto(&format!("{refresh:.0}"), &bar, 44.0, (index * 10 + 3) as isize);
+        bar.addArrangedSubview(&hz);
+        let hidpi_box = option_box("2x", hidpi, &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&hidpi_box);
+        bar.addArrangedSubview(&hidpi_box);
+        let auto_box = option_box("Auto", auto, &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&auto_box);
+        bar.addArrangedSubview(&auto_box);
+
+        let actions_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&actions_row);
+        fix_height(&actions_row, 44.0);
+        let hint = auto_label("Apply recreates the display when its size or rate changes.", 11.0, NSFontWeightRegular, &theme.secondary);
+        actions_row.addSubview(&hint);
+        hint.leadingAnchor().constraintEqualToAnchor(&actions_row.leadingAnchor()).setActive(true);
+        hint.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
+        let remove = button("Remove", &actions_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(screenRemove:));
+        auto_layout(&remove);
+        destructive(&remove);
+        fix_width(&remove, 76.0);
+        fix_height(&remove, 24.0);
+        tag(&remove, index as isize);
+        remove.trailingAnchor().constraintEqualToAnchor(&actions_row.trailingAnchor()).setActive(true);
+        remove.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
+        let shown = crate::screens::preview_name().as_deref() == Some(screen.name.as_str());
+        let preview = button(if shown { "Hide" } else { "Preview" }, &actions_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(screenPreview:));
+        auto_layout(&preview);
+        fix_width(&preview, 76.0);
+        fix_height(&preview, 24.0);
+        tag(&preview, index as isize);
+        preview.trailingAnchor().constraintEqualToAnchor_constant(&remove.leadingAnchor(), -8.0).setActive(true);
+        preview.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
+        let apply = button("Apply", &actions_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(screenApply:));
+        auto_layout(&apply);
+        fix_width(&apply, 76.0);
+        fix_height(&apply, 24.0);
+        tag(&apply, index as isize);
+        apply.trailingAnchor().constraintEqualToAnchor_constant(&preview.leadingAnchor(), -8.0).setActive(true);
+        apply.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
+        hint.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&apply.leadingAnchor(), -12.0).setActive(true);
+
+        let group = group_container(theme, vec![name_row, geometry_row, actions_row]);
+        hug_height(&group);
+        stack.addArrangedSubview(&group);
+        stack.setCustomSpacing_afterView(16.0, &group);
+
+        UI.with(|ui| {
+            let mut ui = ui.borrow_mut();
+            ui.screen_names.push(name);
+            ui.screen_widths.push(width);
+            ui.screen_heights.push(height);
+            ui.screen_refreshes.push(hz);
+            ui.screen_hidpi.push(hidpi_box);
+            ui.screen_auto.push(auto_box);
+        });
+    }
+
+    let agent_heading = section_heading("Agent Workspace", theme);
+    stack.addArrangedSubview(&agent_heading);
+    stack.setCustomSpacing_afterView(8.0, &agent_heading);
+    let (url_row, url_field) = row_field_save(
+        theme,
+        "Home page",
+        "Opened when an agent starts without an explicit URL.",
+        model.config.agent_url.as_deref().unwrap_or(""),
+        sel!(saveAgentUrl:),
     );
-    pb.end(group);
+    let agent = group_container(theme, vec![
+        row_toggle(theme, "Start agents headless", "No window and no focus change. Capture the page with lumen agent screenshot.", model.config.agent_headless, sel!(toggleAgentHeadless:)),
+        url_row,
+        row_toggle(theme, "Reopen last session at launch", "Start the most recent agent again when Lumen launches.", model.config.agent_reopen, sel!(toggleAgentReopen:)),
+    ]);
+    hug_height(&agent);
+    stack.addArrangedSubview(&agent);
+    stack.setCustomSpacing_afterView(12.0, &agent);
+    let agent_note = paragraph_row("Headless sessions use the same CDP endpoint, so harnesses connect as usual.", 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+    stack.addArrangedSubview(&agent_note);
+    stack.setCustomSpacing_afterView(24.0, &agent_note);
+    UI.with(|ui| ui.borrow_mut().agent_url = Some(url_field));
+
+    let captures_heading = section_heading("Captures", theme);
+    stack.addArrangedSubview(&captures_heading);
+    stack.setCustomSpacing_afterView(8.0, &captures_heading);
+    let limit = model.config.capture_limit;
+    let (limit_index, limit_items) = match limit {
+        None => (0, ["Keep all", "5", "20", "50"]),
+        Some(5) => (1, ["Keep all", "5", "20", "50"]),
+        Some(50) => (3, ["Keep all", "5", "20", "50"]),
+        Some(_) => (2, ["Keep all", "5", "20", "50"]),
+    };
+    let captures_folder = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&captures_folder);
+    let buttons = hstack();
+    buttons.setSpacing(8.0);
+    let open = button("Open", &buttons, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(openCaptures:));
+    auto_layout(&open);
+    fix_width(&open, 76.0);
+    fix_height(&open, 24.0);
+    let delete = button("Delete", &buttons, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(deleteCaptures:));
+    auto_layout(&delete);
+    destructive(&delete);
+    fix_width(&delete, 76.0);
+    fix_height(&delete, 24.0);
+    buttons.addArrangedSubview(&delete);
+    buttons.addArrangedSubview(&open);
+    finish_row(&captures_folder, theme, "Captures folder", "", &buttons, Some(160.0));
+    let captures = group_container(theme, vec![
+        row_popup(theme, "Keep captures", "Page and screen screenshots kept per display folder.", &limit_items, limit_index, sel!(captureLimit:)),
+        captures_folder,
+    ]);
+    hug_height(&captures);
+    stack.addArrangedSubview(&captures);
+    let path_note = paragraph_row(&crate::screens::captures_dir().display().to_string(), 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+    stack.setCustomSpacing_afterView(8.0, &captures);
+    stack.addArrangedSubview(&path_note);
+    finish_page(&stack);
+
+    UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
 }
 
 unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     let bounds = host.bounds();
-    let list_width = 196.0;
     if model.displays.is_empty() {
-        let height = bounds.size.height;
-        host.addSubview(&label(
-            "No DDC displays",
-            15.0,
-            NSFontWeightSemibold,
-            &theme.text,
-            NSRect::new(NSPoint::new(MARGIN, height - 70.0), NSSize::new(320.0, 22.0)),
-        ));
-        host.addSubview(&paragraph(
-            "Lumen talks to monitors over DDC/CI. Connect one, or wake it, then scan again. A \
-             released display stays off until it is reclaimed.",
+        let (scroll, stack) = page_stack(host);
+        let heading = section_heading("Displays", theme);
+        stack.addArrangedSubview(&heading);
+        stack.setCustomSpacing_afterView(8.0, &heading);
+        let title = auto_label("No DDC displays", 15.0, NSFontWeightSemibold, &theme.text);
+        stack.addArrangedSubview(&title);
+        stack.setCustomSpacing_afterView(6.0, &title);
+        let body = paragraph_row(
+            "Lumen talks to monitors over DDC/CI. Connect one, or wake it, then scan again. A released display stays off until it is reclaimed.",
             12.0,
             &theme.secondary,
-            NSRect::new(
-                NSPoint::new(MARGIN, height - 132.0),
-                NSSize::new(bounds.size.width - MARGIN * 2.0, 52.0),
-            ),
-        ));
-        let _ = button(
-            "Scan displays",
-            host,
-            NSRect::new(NSPoint::new(MARGIN, height - 172.0), NSSize::new(120.0, 28.0)),
-            true,
-            sel!(refreshDisplays:),
+            bounds.size.width - MARGIN * 2.0,
         );
+        stack.addArrangedSubview(&body);
+        stack.setCustomSpacing_afterView(12.0, &body);
+        let scan = button("Scan displays", &stack, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(refreshDisplays:));
+        auto_layout(&scan);
+        fix_width(&scan, 120.0);
+        fix_height(&scan, 28.0);
+        stack.addArrangedSubview(&scan);
+        finish_page(&stack);
+        UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
         return;
     }
 
+    let list_width = 196.0;
     let selected = UI.with(|ui| ui.borrow().selected).min(model.displays.len() - 1);
     UI.with(|ui| ui.borrow_mut().selected = selected);
 
@@ -921,7 +1181,6 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
             b.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, NSFontWeightRegular)));
             pin_top(&b);
         }
-
         let line = NSBox::initWithFrame(
             mtm().alloc(),
             NSRect::new(NSPoint::new(list_width, 0.0), NSSize::new(1.0, bounds.size.height)),
@@ -936,832 +1195,170 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
         host.addSubview(&line);
     }
 
-    let detail_width = bounds.size.width - list_width - 1.0;
-    let scroll = unsafe {
-        let scroll = NSScrollView::initWithFrame(
-            mtm().alloc(),
-            NSRect::new(
-                NSPoint::new(list_width + 1.0, 0.0),
-                NSSize::new(detail_width, bounds.size.height),
-            ),
-        );
-        scroll.setHasVerticalScroller(true);
-        scroll.setDrawsBackground(false);
-        scroll.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewHeightSizable,
-        );
-        host.addSubview(&scroll);
-        scroll
-    };
-    let doc = FlippedView::new(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(detail_width, bounds.size.height),
-    ));
-    unsafe {
-        doc.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
-    }
-    unsafe {
-        scroll.setDocumentView(Some(&doc));
-    }
+    let detail = NSView::initWithFrame(
+        mtm().alloc(),
+        NSRect::new(
+            NSPoint::new(list_width + 1.0, 0.0),
+            NSSize::new(bounds.size.width - list_width - 1.0, bounds.size.height),
+        ),
+    );
+    detail.setAutoresizingMask(
+        NSAutoresizingMaskOptions::NSViewWidthSizable | NSAutoresizingMaskOptions::NSViewHeightSizable,
+    );
+    host.addSubview(&detail);
+    let (scroll, stack) = page_stack(&detail);
 
     let display = &model.displays[selected];
     let key = display.key.clone();
     let released = model.released(&key);
-    let show_in_menu = model
-        .config
-        .display(&key)
-        .map(|config| config.show_in_menu)
-        .unwrap_or(true);
-    let inputs = model
-        .config
-        .display(&key)
-        .map(|config| config.inputs.clone())
-        .unwrap_or_default();
+    let show_in_menu = model.config.display(&key).map(|config| config.show_in_menu).unwrap_or(true);
+    let inputs = model.config.display(&key).map(|config| config.inputs.clone()).unwrap_or_default();
 
-    let mut pb = PageBuilder::new(&doc, theme, detail_width);
-
-    pb.gap(-MARGIN + 24.0);
-    doc.addSubview(&label(
-        &display.name,
-        17.0,
-        NSFontWeightSemibold,
-        &theme.text,
-        NSRect::new(NSPoint::new(MARGIN, 22.0), NSSize::new(detail_width - MARGIN * 2.0, 22.0)),
-    ));
-    doc.addSubview(&mono(
+    let header = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&header);
+    fix_height(&header, 52.0);
+    let name = auto_label(&display.name, 17.0, NSFontWeightSemibold, &theme.text);
+    let status = mono(
         &format!("{key}  ·  {}", if released { "released" } else { "connected" }),
         11.0,
         &theme.secondary,
-        NSRect::new(NSPoint::new(MARGIN, 46.0), NSSize::new(detail_width - MARGIN * 2.0, 16.0)),
-    ));
-    pb.gap(76.0);
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
+    );
+    auto_layout(&status);
+    header.addSubview(&name);
+    header.addSubview(&status);
+    name.leadingAnchor().constraintEqualToAnchor(&header.leadingAnchor()).setActive(true);
+    name.topAnchor().constraintEqualToAnchor(&header.topAnchor()).setActive(true);
+    status.leadingAnchor().constraintEqualToAnchor(&header.leadingAnchor()).setActive(true);
+    status.topAnchor().constraintEqualToAnchor_constant(&name.bottomAnchor(), 4.0).setActive(true);
+    hug_height(&header);
+    stack.addArrangedSubview(&header);
+    stack.setCustomSpacing_afterView(20.0, &header);
 
-    pb.section("Menu");
-    let mut group = pb.group();
-    group.toggle(
+    let menu_heading = section_heading("Menu", theme);
+    stack.addArrangedSubview(&menu_heading);
+    stack.setCustomSpacing_afterView(8.0, &menu_heading);
+    let menu = group_container(theme, vec![row_toggle(
+        theme,
         "Show in menu",
         "List this display and its inputs in the menu bar menu.",
         show_in_menu,
         sel!(toggleShowInMenu:),
-    );
-    pb.end(group);
+    )]);
+    hug_height(&menu);
+    stack.addArrangedSubview(&menu);
+    stack.setCustomSpacing_afterView(24.0, &menu);
 
-    pb.section("Controls");
-    let mut group = pb.group();
+    let controls_heading = section_heading("Controls", theme);
+    stack.addArrangedSubview(&controls_heading);
+    stack.setCustomSpacing_afterView(8.0, &controls_heading);
     UI.with(|ui| {
         let mut ui = ui.borrow_mut();
         ui.brightness_value = None;
         ui.contrast_value = None;
         ui.volume_value = None;
     });
-    let mut controls = 0;
+    let mut control_rows: Vec<Retained<NSView>> = Vec::new();
     if let Some((value, max)) = display.brightness {
-        let text = group.slider("Brightness", value, max, 1);
-        UI.with(|ui| ui.borrow_mut().brightness_value = Some(text));
-        controls += 1;
+        let (row, readout) = slider_row(theme, "Brightness", value, max, 1);
+        UI.with(|ui| ui.borrow_mut().brightness_value = Some(readout));
+        control_rows.push(row);
     }
     if let Some((value, max)) = display.contrast {
-        if controls > 0 {
-            group.separator();
-        }
-        let text = group.slider("Contrast", value, max, 2);
-        UI.with(|ui| ui.borrow_mut().contrast_value = Some(text));
-        controls += 1;
+        let (row, readout) = slider_row(theme, "Contrast", value, max, 2);
+        UI.with(|ui| ui.borrow_mut().contrast_value = Some(readout));
+        control_rows.push(row);
     }
     if let Some((value, max)) = display.volume {
-        if controls > 0 {
-            group.separator();
-        }
-        let text = group.slider("Volume", value, max, 3);
-        UI.with(|ui| ui.borrow_mut().volume_value = Some(text));
+        let (row, readout) = slider_row(theme, "Volume", value, max, 3);
+        UI.with(|ui| ui.borrow_mut().volume_value = Some(readout));
+        control_rows.push(row);
     }
-    pb.end(group);
+    if control_rows.is_empty() {
+        let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&row);
+        fix_height(&row, 36.0);
+        let label = auto_label("No DDC controls reported", 12.0, NSFontWeightRegular, &theme.secondary);
+        row.addSubview(&label);
+        label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+        label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+        control_rows.push(row);
+    }
+    let controls = group_container(theme, control_rows);
+    hug_height(&controls);
+    stack.addArrangedSubview(&controls);
+    stack.setCustomSpacing_afterView(24.0, &controls);
 
-    pb.section("Inputs");
-    let mut group = pb.group();
+    let inputs_heading = section_heading("Inputs", theme);
+    stack.addArrangedSubview(&inputs_heading);
+    stack.setCustomSpacing_afterView(8.0, &inputs_heading);
+    let mut rows: Vec<Retained<NSView>> = Vec::new();
     for (index, input) in inputs.iter().enumerate() {
-        build_input_row(&mut group, theme, index, input);
-        if index + 1 < inputs.len() {
-            group.separator();
-        }
+        rows.push(input_row(theme, index, input));
     }
     if inputs.is_empty() {
-        group.doc.addSubview(&label(
-            "No inputs configured",
-            12.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(NSPoint::new(group.left, group.y + 10.0), NSSize::new(240.0, 18.0)),
-        ));
-        group.y += 36.0;
+        let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&row);
+        fix_height(&row, 36.0);
+        let label = auto_label("No inputs configured", 12.0, NSFontWeightRegular, &theme.secondary);
+        row.addSubview(&label);
+        label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+        label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+        rows.push(row);
     }
-    // Add row.
-    if !inputs.is_empty() {
-        group.separator();
-    }
-    UI.with(|ui| {
-        let mut ui = ui.borrow_mut();
-        ui.draft_label = None;
-        ui.draft_value = None;
-    });
-    let lf = text_field(
-        "",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left, group.y + 9.0), NSSize::new(140.0, 26.0)),
-        Some("Label"),
-    );
-    let vf = text_field(
-        "",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left + 148.0, group.y + 9.0), NSSize::new(80.0, 26.0)),
-        Some("0x00"),
-    );
+
+    let add_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&add_row);
+    fix_height(&add_row, 44.0);
+    let bar = hstack();
+    bar.setSpacing(8.0);
+    add_row.addSubview(&bar);
+    bar.leadingAnchor().constraintEqualToAnchor(&add_row.leadingAnchor()).setActive(true);
+    bar.centerYAnchor().constraintEqualToAnchor(&add_row.centerYAnchor()).setActive(true);
+    let lf = text_field_auto("", &bar, 140.0, Some("Label"));
+    let vf = text_field_auto("", &bar, 80.0, Some("0x00"));
     let protocol = UI.with(|ui| ui.borrow().draft_protocol);
-    let _ = button(
-        protocol.label(),
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left + 236.0, group.y + 9.0), NSSize::new(70.0, 26.0)),
-        true,
-        sel!(cycleDraftProtocol:),
-    );
-    let _ = button(
-        "Add",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left + 314.0, group.y + 9.0), NSSize::new(60.0, 26.0)),
-        true,
-        sel!(addInput:),
-    );
-    group.y += 44.0;
-    group.separator();
-    let reset = button(
-        "Reset to detected",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left, group.y + 9.0), NSSize::new(140.0, 26.0)),
-        true,
-        sel!(resetInputs:),
-    );
-    pin_right(&reset);
-    unsafe {
-        reset.setFrameOrigin(NSPoint::new(group.right - 140.0, group.y + 9.0));
-    }
-    group.doc.addSubview(&label(
-        "Changes apply to the menu immediately.",
-        11.0,
-        NSFontWeightRegular,
-        &theme.secondary,
-        NSRect::new(NSPoint::new(group.left, group.y + 13.0), NSSize::new(240.0, 16.0)),
-    ));
-    group.y += 44.0;
+    let protocol_button = button(protocol.label(), &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(cycleDraftProtocol:));
+    auto_layout(&protocol_button);
+    fix_width(&protocol_button, 70.0);
+    fix_height(&protocol_button, 26.0);
+    let add = button("Add", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(addInput:));
+    auto_layout(&add);
+    fix_width(&add, 60.0);
+    fix_height(&add, 26.0);
+    bar.addArrangedSubview(&lf);
+    bar.addArrangedSubview(&vf);
+    bar.addArrangedSubview(&protocol_button);
+    bar.addArrangedSubview(&add);
+    rows.push(add_row);
     UI.with(|ui| {
         let mut ui = ui.borrow_mut();
         ui.draft_label = Some(lf);
         ui.draft_value = Some(vf);
     });
-    pb.end(group);
 
-    let height = (pb.y + MARGIN).max(bounds.size.height);
-    unsafe {
-        doc.setFrameSize(NSSize::new(detail_width, height));
-    }
-    let _ = height;
-}
+    let reset_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&reset_row);
+    fix_height(&reset_row, 44.0);
+    let reset = button("Reset to detected", &reset_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(resetInputs:));
+    auto_layout(&reset);
+    fix_width(&reset, 140.0);
+    fix_height(&reset, 26.0);
+    reset.leadingAnchor().constraintEqualToAnchor(&reset_row.leadingAnchor()).setActive(true);
+    reset.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
+    let hint = auto_label("Changes apply to the menu immediately.", 11.0, NSFontWeightRegular, &theme.secondary);
+    reset_row.addSubview(&hint);
+    hint.leadingAnchor().constraintEqualToAnchor_constant(&reset.trailingAnchor(), 12.0).setActive(true);
+    hint.trailingAnchor().constraintLessThanOrEqualToAnchor(&reset_row.trailingAnchor()).setActive(true);
+    hint.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
+    rows.push(reset_row);
 
-unsafe fn build_input_row(group: &mut Group, theme: &Theme, index: usize, input: &InputSetting) {
-    let row_y = group.y;
-    let cb = checkbox(
-        input.enabled,
-        &group.doc,
-        NSRect::new(NSPoint::new(group.left, row_y + 10.0), NSSize::new(18.0, 18.0)),
-        sel!(toggleInput:),
-    );
-    tag(&cb, index as isize);
-    unsafe {
-        cb.setAccessibilityLabel(Some(&NSString::from_str(&format!(
-            "Enable {}",
-            input.label
-        ))));
-    }
+    let inputs_group = group_container(theme, rows);
+    hug_height(&inputs_group);
+    stack.addArrangedSubview(&inputs_group);
+    finish_page(&stack);
 
-    let badge = match input.verified {
-        Some(true) => Some(("checkmark.circle.fill", NSColor::systemGreenColor())),
-        Some(false) => Some(("xmark.circle", NSColor::systemRedColor())),
-        None => None,
-    };
-    if let Some((symbol, color)) = badge {
-        if let Some(image) =
-            unsafe { NSImage::imageWithSystemSymbolName_accessibilityDescription(&NSString::from_str(symbol), None) }
-        {
-            let view = unsafe { NSImageView::new(mtm()) };
-            view.setFrame(NSRect::new(
-                NSPoint::new(group.left + 26.0, row_y + 12.0),
-                NSSize::new(14.0, 14.0),
-            ));
-            unsafe {
-                view.setImage(Some(&image));
-                view.setContentTintColor(Some(&color));
-            }
-            group.doc.addSubview(&view);
-        }
-    }
-
-    group.doc.addSubview(&label(
-        &input.label,
-        13.0,
-        NSFontWeightMedium,
-        if input.enabled { &theme.text } else { &theme.secondary },
-        NSRect::new(
-            NSPoint::new(group.left + 48.0, row_y + 9.0),
-            NSSize::new(150.0, 18.0),
-        ),
-    ));
-    group.doc.addSubview(&mono(
-        &format!("{:#06x}", input.value),
-        11.0,
-        &theme.secondary,
-        NSRect::new(
-            NSPoint::new(group.left + 206.0, row_y + 11.0),
-            NSSize::new(64.0, 16.0),
-        ),
-    ));
-
-    let test = button(
-        "Test",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.right - 84.0, row_y + 7.0), NSSize::new(54.0, 24.0)),
-        false,
-        sel!(testInput:),
-    );
-    tag(&test, index as isize);
-    pin_right(&test);
-    let protocol = button(
-        input.protocol.label(),
-        &group.doc,
-        NSRect::new(
-            NSPoint::new(group.right - 162.0, row_y + 7.0),
-            NSSize::new(70.0, 24.0),
-        ),
-        true,
-        sel!(cycleProtocol:),
-    );
-    tag(&protocol, index as isize);
-    pin_right(&protocol);
-    unsafe {
-        protocol.setToolTip(Some(&NSString::from_str(
-            "Click to switch between standard DDC and the LG alternate protocol.",
-        )));
-    }
-    let remove = button(
-        "×",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.right - 22.0, row_y + 7.0), NSSize::new(22.0, 24.0)),
-        false,
-        sel!(removeInput:),
-    );
-    tag(&remove, index as isize);
-    pin_right(&remove);
-    group.y += 38.0;
-}
-
-unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
-    let bounds = host.bounds();
-    let scroll = unsafe {
-        let scroll = NSScrollView::initWithFrame(mtm().alloc(), bounds);
-        scroll.setHasVerticalScroller(true);
-        scroll.setDrawsBackground(false);
-        scroll.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewHeightSizable,
-        );
-        host.addSubview(&scroll);
-        scroll
-    };
-    let doc = FlippedView::new(NSRect::new(
-        NSPoint::new(0.0, 0.0),
-        NSSize::new(bounds.size.width, bounds.size.height),
-    ));
-    unsafe {
-        doc.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
-        scroll.setDocumentView(Some(&doc));
-    }
-    UI.with(|ui| {
-        let mut ui = ui.borrow_mut();
-        ui.screen_names.clear();
-        ui.screen_widths.clear();
-        ui.screen_heights.clear();
-        ui.screen_refreshes.clear();
-        ui.screen_hidpi.clear();
-        ui.screen_auto.clear();
-        ui.agent_url = None;
-    });
-
-    let screens = crate::screens::list();
-    let at_cap = screens.len() >= crate::screens::MAX_SCREENS;
-    let mut pb = PageBuilder::new(&doc, theme, bounds.size.width);
-    let new_button = pb.section_button(
-        "Virtual Displays",
-        "New Virtual Display",
-        !at_cap,
-        sel!(newScreen:),
-    );
-    if at_cap {
-        unsafe {
-            new_button.setToolTip(Some(&NSString::from_str(
-                "Lumen supports up to four virtual displays.",
-            )));
-        }
-    }
-
-    if screens.is_empty() {
-        let mut group = pb.group();
-        group.doc.addSubview(&label(
-            "No virtual displays",
-            13.0,
-            NSFontWeightMedium,
-            &theme.text,
-            NSRect::new(NSPoint::new(group.left, group.y + 8.0), NSSize::new(300.0, 18.0)),
-        ));
-        group.doc.addSubview(&paragraph(
-            "Create one for an agent workspace, a preview or a capture source. Displays exist only in memory.",
-            11.0,
-            &theme.secondary,
-            NSRect::new(
-                NSPoint::new(group.left, group.y + 28.0),
-                NSSize::new(group.right - group.left, 32.0),
-            ),
-        ));
-        group.y += 62.0;
-        pb.end(group);
-    }
-
-    for (index, screen) in screens.iter().enumerate() {
-        let config = model.config.virtual_screen(&screen.name).cloned();
-        let refresh = config.as_ref().map(|config| config.refresh).unwrap_or(60.0);
-        let hidpi = config.as_ref().map(|config| config.hidpi).unwrap_or(false);
-        let auto = config.as_ref().map(|config| config.auto_create).unwrap_or(true);
-
-        let mut group = pb.group();
-        // Name row.
-        group.doc.addSubview(&label(
-            "Name",
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(NSPoint::new(group.left, group.y + 15.0), NSSize::new(40.0, 14.0)),
-        ));
-        let name = text_field(
-            &screen.name,
-            &group.doc,
-            NSRect::new(
-                NSPoint::new(group.left + 44.0, group.y + 9.0),
-                NSSize::new(200.0, 26.0),
-            ),
-            None,
-        );
-        let summary = format!(
-            "{}x{} at {},{}  ·  {}x  ·  {} Hz",
-            screen.width, screen.height, screen.x, screen.y, screen.scale, refresh
-        );
-        let summary_field = label(
-            &summary,
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(
-                NSPoint::new(group.left + 256.0, group.y + 14.0),
-                NSSize::new(group.right - group.left - 256.0, 16.0),
-            ),
-        );
-        stretch(&summary_field);
-        group.doc.addSubview(&summary_field);
-        group.y += 40.0;
-        group.separator();
-
-        // Geometry row.
-        let field_y = group.y + 7.0;
-        let mut x = group.left;
-        group.doc.addSubview(&label(
-            "W",
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(NSPoint::new(x, field_y + 5.0), NSSize::new(14.0, 14.0)),
-        ));
-        x += 16.0;
-        let width = number_field(
-            &screen.width.to_string(),
-            &group.doc,
-            NSRect::new(NSPoint::new(x, field_y), NSSize::new(58.0, 24.0)),
-            (index * 10 + 1) as isize,
-        );
-        x += 64.0;
-        group.doc.addSubview(&label(
-            "H",
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(NSPoint::new(x, field_y + 5.0), NSSize::new(14.0, 14.0)),
-        ));
-        x += 16.0;
-        let height = number_field(
-            &screen.height.to_string(),
-            &group.doc,
-            NSRect::new(NSPoint::new(x, field_y), NSSize::new(58.0, 24.0)),
-            (index * 10 + 2) as isize,
-        );
-        x += 64.0;
-        group.doc.addSubview(&label(
-            "Hz",
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(NSPoint::new(x, field_y + 5.0), NSSize::new(22.0, 14.0)),
-        ));
-        x += 22.0;
-        let hz = number_field(
-            &format!("{refresh:.0}"),
-            &group.doc,
-            NSRect::new(NSPoint::new(x, field_y), NSSize::new(44.0, 24.0)),
-            (index * 10 + 3) as isize,
-        );
-        x += 56.0;
-        let hidpi_box = option_box(
-            "2x",
-            hidpi,
-            &group.doc,
-            NSRect::new(NSPoint::new(x, field_y + 3.0), NSSize::new(42.0, 20.0)),
-        );
-        x += 48.0;
-        let auto_box = option_box(
-            "Auto",
-            auto,
-            &group.doc,
-            NSRect::new(NSPoint::new(x, field_y + 3.0), NSSize::new(56.0, 20.0)),
-        );
-        group.y += 40.0;
-        group.separator();
-
-        // Actions row.
-        let remove = button(
-            "Remove",
-            &group.doc,
-            NSRect::new(
-                NSPoint::new(group.right - 76.0, group.y + 8.0),
-                NSSize::new(76.0, 24.0),
-            ),
-            true,
-            sel!(screenRemove:),
-        );
-        tag(&remove, index as isize);
-        unsafe {
-            destructive(&remove);
-        }
-        pin_right(&remove);
-        let shown = crate::screens::preview_name().as_deref() == Some(screen.name.as_str());
-        let preview = button(
-            if shown { "Hide" } else { "Preview" },
-            &group.doc,
-            NSRect::new(
-                NSPoint::new(group.right - 160.0, group.y + 8.0),
-                NSSize::new(76.0, 24.0),
-            ),
-            true,
-            sel!(screenPreview:),
-        );
-        tag(&preview, index as isize);
-        pin_right(&preview);
-        let apply = button(
-            "Apply",
-            &group.doc,
-            NSRect::new(
-                NSPoint::new(group.right - 244.0, group.y + 8.0),
-                NSSize::new(76.0, 24.0),
-            ),
-            true,
-            sel!(screenApply:),
-        );
-        tag(&apply, index as isize);
-        pin_right(&apply);
-        group.doc.addSubview(&label(
-            "Apply recreates the display when its size or rate changes.",
-            11.0,
-            NSFontWeightRegular,
-            &theme.secondary,
-            NSRect::new(
-                NSPoint::new(group.left, group.y + 12.0),
-                NSSize::new(group.right - group.left - 260.0, 16.0),
-            ),
-        ));
-        group.y += 40.0;
-        pb.end(group);
-
-        UI.with(|ui| {
-            let mut ui = ui.borrow_mut();
-            ui.screen_names.push(name);
-            ui.screen_widths.push(width);
-            ui.screen_heights.push(height);
-            ui.screen_refreshes.push(hz);
-            ui.screen_hidpi.push(hidpi_box);
-            ui.screen_auto.push(auto_box);
-        });
-        pb.gap(2.0);
-    }
-
-    pb.section("Agent Workspace");
-    let mut group = pb.group();
-    group.toggle(
-        "Start agents headless",
-        "No window and no focus change. Capture the page with lumen agent screenshot.",
-        model.config.agent_headless,
-        sel!(toggleAgentHeadless:),
-    );
-    group.separator();
-    let url = model.config.agent_url.clone().unwrap_or_default();
-    let url_field = group.field(
-        "Home page",
-        "Opened when an agent starts without an explicit URL.",
-        &url,
-        "about:blank",
-        220.0,
-        701,
-    );
-    // Save button beside the field.
-    let save = button(
-        "Save",
-        &group.doc,
-        NSRect::new(NSPoint::new(group.right - 220.0, group.y - ROW + 14.0), NSSize::new(0.0, 26.0)),
-        true,
-        sel!(saveAgentUrl:),
-    );
-    unsafe {
-        save.setFrame(NSRect::new(
-            NSPoint::new(group.right - 60.0, group.y - ROW + 14.0),
-            NSSize::new(60.0, 26.0),
-        ));
-        url_field.setFrame(NSRect::new(
-            NSPoint::new(group.right - 220.0 - 68.0, group.y - ROW + 14.0),
-            NSSize::new(220.0, 26.0),
-        ));
-    }
-    pin_right(&save);
-    UI.with(|ui| ui.borrow_mut().agent_url = Some(url_field));
-    group.separator();
-    group.toggle(
-        "Reopen last session at launch",
-        "Start the most recent agent again when Lumen launches.",
-        model.config.agent_reopen,
-        sel!(toggleAgentReopen:),
-    );
-    pb.end(group);
-    pb.note("Headless sessions use the same CDP endpoint, so harnesses connect as usual.");
-
-    pb.section("Captures");
-    let limit = model.config.capture_limit;
-    let (limit_index, limit_items) = match limit {
-        None => (0, ["Keep all", "5", "20", "50"]),
-        Some(5) => (1, ["Keep all", "5", "20", "50"]),
-        Some(50) => (3, ["Keep all", "5", "20", "50"]),
-        Some(_) => (2, ["Keep all", "5", "20", "50"]),
-    };
-    let mut group = pb.group();
-    group.popup(
-        "Keep captures",
-        "Page and screen screenshots kept per display folder.",
-        &limit_items,
-        limit_index,
-        sel!(captureLimit:),
-    );
-    group.separator();
-    group.doc.addSubview(&label(
-        "Captures folder",
-        13.0,
-        NSFontWeightMedium,
-        &theme.text,
-        NSRect::new(NSPoint::new(group.left, group.y + 17.0), NSSize::new(140.0, 18.0)),
-    ));
-    let open = button(
-        "Open",
-        &group.doc,
-        NSRect::new(
-            NSPoint::new(group.right - 76.0, group.y + 14.0),
-            NSSize::new(76.0, 24.0),
-        ),
-        true,
-        sel!(openCaptures:),
-    );
-    pin_right(&open);
-    let delete = button(
-        "Delete",
-        &group.doc,
-        NSRect::new(
-            NSPoint::new(group.right - 160.0, group.y + 14.0),
-            NSSize::new(76.0, 24.0),
-        ),
-        true,
-        sel!(deleteCaptures:),
-    );
-    unsafe {
-        destructive(&delete);
-    }
-    pin_right(&delete);
-    group.y += ROW;
-    pb.end(group);
-    pb.note(&crate::screens::captures_dir().display().to_string());
-
-    let height = (pb.y + MARGIN).max(bounds.size.height);
-    unsafe {
-        doc.setFrameSize(NSSize::new(bounds.size.width, height));
-    }
     UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
-}
-
-unsafe fn auto_layout(view: &NSView) {
-    view.setTranslatesAutoresizingMaskIntoConstraints(false);
-}
-
-unsafe fn fix_height(view: &NSView, height: f64) {
-    view.heightAnchor()
-        .constraintEqualToConstant(height)
-        .setActive(true);
-}
-
-unsafe fn fix_width(view: &NSView, width: f64) {
-    view.widthAnchor()
-        .constraintEqualToConstant(width)
-        .setActive(true);
-}
-
-unsafe fn pin_edges(view: &NSView, parent: &NSView, top: f64, bottom: f64, leading: f64, trailing: f64) {
-    view.topAnchor()
-        .constraintEqualToAnchor_constant(&parent.topAnchor(), top)
-        .setActive(true);
-    view.bottomAnchor()
-        .constraintEqualToAnchor_constant(&parent.bottomAnchor(), bottom)
-        .setActive(true);
-    view.leadingAnchor()
-        .constraintEqualToAnchor_constant(&parent.leadingAnchor(), leading)
-        .setActive(true);
-    view.trailingAnchor()
-        .constraintEqualToAnchor_constant(&parent.trailingAnchor(), trailing)
-        .setActive(true);
-}
-
-unsafe fn vstack() -> Retained<NSStackView> {
-    let stack = NSStackView::new(mtm());
-    auto_layout(&stack);
-    stack.setOrientation(NSUserInterfaceLayoutOrientation::Vertical);
-    stack.setAlignment(NSLayoutAttribute::Width);
-    stack.setDistribution(NSStackViewDistribution::Fill);
-    stack.setSpacing(0.0);
-    stack
-}
-
-unsafe fn hstack() -> Retained<NSStackView> {
-    let stack = NSStackView::new(mtm());
-    auto_layout(&stack);
-    stack.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-    stack.setAlignment(NSLayoutAttribute::CenterY);
-    stack.setDistribution(NSStackViewDistribution::Fill);
-    stack.setSpacing(8.0);
-    stack
-}
-
-unsafe fn auto_label(
-    text: &str,
-    size: f64,
-    weight: f64,
-    color: &NSColor,
-) -> Retained<NSTextField> {
-    let field = label(text, size, weight, color, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&field);
-    field
-}
-
-unsafe fn auto_paragraph(text: &str, size: f64, color: &NSColor) -> Retained<NSTextField> {
-    let field = paragraph(text, size, color, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&field);
-    field
-}
-
-unsafe fn auto_separator(theme: &Theme) -> Retained<NSBox> {
-    let line = NSBox::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 1.0)));
-    line.setBoxType(NSBoxType::NSBoxCustom);
-    line.setTitlePosition(NSTitlePosition::NSNoTitle);
-    line.setBorderWidth(0.0);
-    line.setCornerRadius(0.0);
-    line.setFillColor(&theme.border);
-    line.setBorderColor(&theme.border);
-    auto_layout(&line);
-    fix_height(&line, 1.0);
-    line
-}
-
-unsafe fn section_heading(title: &str, theme: &Theme) -> Retained<NSTextField> {
-    auto_label(title, 11.0, NSFontWeightSemibold, &theme.secondary)
-}
-
-unsafe fn group_container(theme: &Theme, rows: Vec<Retained<NSView>>) -> Retained<NSView> {
-    let container = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&container);
-
-    let background = card_box(theme, &container, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&background);
-    pin_edges(&background, &container, 0.0, 0.0, 0.0, 0.0);
-
-    let stack = vstack();
-    container.addSubview(&stack);
-    pin_edges(&stack, &container, 6.0, -6.0, 16.0, -16.0);
-    let count = rows.len();
-    for (index, row) in rows.into_iter().enumerate() {
-        stack.addArrangedSubview(&row);
-        if index + 1 < count {
-            let line = auto_separator(theme);
-            stack.addArrangedSubview(&line);
-        }
-    }
-    container
-}
-
-unsafe fn row_text_button(
-    theme: &Theme,
-    title: &str,
-    detail: &str,
-    button_title: &str,
-    action: objc2::runtime::Sel,
-) -> Retained<NSView> {
-    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&row);
-    fix_height(&row, 56.0);
-
-    let title = auto_label(title, 13.0, NSFontWeightMedium, &theme.text);
-    let detail = auto_label(detail, 11.0, NSFontWeightRegular, &theme.secondary);
-    let control = button(button_title, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, action);
-    auto_layout(&control);
-    fix_width(&control, 76.0);
-    fix_height(&control, 24.0);
-
-    row.addSubview(&title);
-    row.addSubview(&detail);
-    title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
-    title.topAnchor().constraintEqualToAnchor_constant(&row.topAnchor(), 8.0).setActive(true);
-    title.trailingAnchor()
-        .constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0)
-        .setActive(true);
-    detail.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
-    detail.topAnchor().constraintEqualToAnchor_constant(&title.bottomAnchor(), 2.0).setActive(true);
-    detail.trailingAnchor()
-        .constraintLessThanOrEqualToAnchor_constant(&control.leadingAnchor(), -12.0)
-        .setActive(true);
-    control.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
-    control.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
-    row
-}
-
-unsafe fn row_key_value(theme: &Theme, key: &str, value: &str) -> Retained<NSView> {
-    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&row);
-    fix_height(&row, 36.0);
-    let key = auto_label(key, 13.0, NSFontWeightMedium, &theme.text);
-    let value = auto_label(value, 12.0, NSFontWeightRegular, &theme.secondary);
-    value.setAlignment(NSTextAlignment::Right);
-    row.addSubview(&key);
-    row.addSubview(&value);
-    key.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
-    key.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
-    value.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
-    value.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
-    key.trailingAnchor()
-        .constraintLessThanOrEqualToAnchor_constant(&value.leadingAnchor(), -12.0)
-        .setActive(true);
-    row
-}
-
-unsafe fn page_stack(host: &NSView) -> (Retained<NSScrollView>, Retained<NSStackView>) {
-    let bounds = host.bounds();
-    let scroll = NSScrollView::initWithFrame(mtm().alloc(), bounds);
-    scroll.setHasVerticalScroller(true);
-    scroll.setDrawsBackground(false);
-    scroll.setAutoresizingMask(
-        NSAutoresizingMaskOptions::NSViewWidthSizable
-            | NSAutoresizingMaskOptions::NSViewHeightSizable,
-    );
-    host.addSubview(&scroll);
-
-    let doc = FlippedView::new(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&doc);
-    scroll.setDocumentView(Some(&doc));
-    let clip = scroll.contentView();
-    doc.leadingAnchor().constraintEqualToAnchor(&clip.leadingAnchor()).setActive(true);
-    doc.trailingAnchor().constraintEqualToAnchor(&clip.trailingAnchor()).setActive(true);
-    doc.topAnchor().constraintEqualToAnchor(&clip.topAnchor()).setActive(true);
-    doc.heightAnchor()
-        .constraintGreaterThanOrEqualToAnchor(&clip.heightAnchor())
-        .setActive(true);
-
-    let stack = vstack();
-    doc.addSubview(&stack);
-    pin_edges(&stack, &doc, MARGIN, -MARGIN, MARGIN, -MARGIN);
-    (scroll, stack)
 }
 
 unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
@@ -1797,6 +1394,7 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
     description.setPreferredMaxLayoutWidth(host.bounds().size.width - MARGIN * 2.0 - 88.0);
     text.addArrangedSubview(&description);
     header.addArrangedSubview(&text);
+    hug_height(&header);
     stack.addArrangedSubview(&header);
     stack.setCustomSpacing_afterView(28.0, &header);
 
@@ -1819,6 +1417,7 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
             sel!(openCaptures:),
         ),
     ]);
+    hug_height(&places);
     stack.addArrangedSubview(&places);
     stack.setCustomSpacing_afterView(24.0, &places);
 
@@ -1847,10 +1446,13 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
     copy.centerYAnchor().constraintEqualToAnchor(&copy_row.centerYAnchor()).setActive(true);
     rows.push(copy_row);
     let group = group_container(theme, rows);
+    hug_height(&group);
     stack.addArrangedSubview(&group);
+    finish_page(&stack);
 
     UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
 }
+
 
 
 fn capture_virtual_drafts() -> Option<VirtualDrafts> {
@@ -1896,9 +1498,10 @@ fn restore_virtual_drafts(drafts: &VirtualDrafts) {
     });
 }
 
+
+
 fn build_page(host: &NSView, model: &Model, page: Page) {
     let theme = Theme::new();
-    let bounds = host.bounds();
     let drafts = if page == Page::Virtual
         && UI.with(|ui| ui.borrow().built_page == Some(Page::Virtual))
     {
@@ -1915,27 +1518,7 @@ fn build_page(host: &NSView, model: &Model, page: Page) {
         ui.borrow_mut().scroll = None;
     });
     unsafe { match page {
-        Page::General => {
-            let scroll = {
-                let scroll = NSScrollView::initWithFrame(mtm().alloc(), bounds);
-                scroll.setHasVerticalScroller(true);
-                scroll.setDrawsBackground(false);
-                scroll.setAutoresizingMask(
-                    NSAutoresizingMaskOptions::NSViewWidthSizable
-                        | NSAutoresizingMaskOptions::NSViewHeightSizable,
-                );
-                host.addSubview(&scroll);
-                scroll
-            };
-            let doc = FlippedView::new(NSRect::new(
-                NSPoint::new(0.0, 0.0),
-                NSSize::new(bounds.size.width, bounds.size.height),
-            ));
-            doc.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
-            scroll.setDocumentView(Some(&doc));
-            build_general(&doc, model, &theme);
-            UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
-        }
+        Page::General => build_general(host, model, &theme),
         Page::Displays => build_displays(host, model, &theme),
         Page::Virtual => {
             build_virtual(host, model, &theme);
