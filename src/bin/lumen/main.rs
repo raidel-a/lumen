@@ -12,6 +12,7 @@ mod log;
 mod login;
 mod menu;
 mod model;
+mod preview;
 mod status;
 mod ui;
 mod screens;
@@ -291,6 +292,7 @@ pub fn apply_control(display_id: u32, code: u8, value: u16) {
 
 /// Removes a virtual screen and closes the browser started on it. Main thread.
 pub fn remove_screen(name: &str) -> (bool, bool) {
+    preview::close(name);
     let _mutation = screens::begin_mutation();
     let stopped = agent::stop(name).unwrap_or(false);
     let removed = screens::remove(name);
@@ -340,8 +342,8 @@ pub fn rename_screen(old: &str, desired: &config::VirtualScreenConfig) -> Result
 
     let _mutation = screens::begin_mutation();
 
-    if screens::preview_name().as_deref() == Some(old) {
-        screens::stop_preview();
+    if preview::is_open(old) {
+        preview::close(old);
     }
     let _ = agent::stop(old);
     agent::stop_profile(old);
@@ -416,6 +418,7 @@ pub fn run_action(action: Action) {
             ui::open(Some(point), None);
         }
         Action::Quit => {
+            preview::close_all();
             let browsers = agent::stop_all();
             crate::log::info(format!("stopped agent browsers: {browsers:?}"));
             with_model(|model| {
@@ -465,10 +468,8 @@ pub fn run_action(action: Action) {
             remove_screen(&name);
         }
         Action::Preview { name } => {
-            if let Some(target) = ui::target() {
-                if let Err(error) = screens::toggle_preview(&name, &target) {
-                    with_model(|model| model.message = Some(error));
-                }
+            if let Err(error) = preview::toggle(&name) {
+                with_model(|model| model.message = Some(error));
             }
         }
         Action::Mute { display, muted } => {

@@ -17,16 +17,9 @@ use core_foundation::base::{TCFType, CFRelease, CFTypeRef};
 use core_foundation::string::CFString;
 use core_foundation::url::CFURL;
 use core_graphics::display::CGDisplay;
+use objc2_foundation::{NSDate, NSRunLoop, NSSize, NSString};
 use objc2::msg_send;
-use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
-use objc2_app_kit::{
-    NSBackingStoreType, NSFloatingWindowLevel, NSView, NSWindow, NSWindowCollectionBehavior,
-    NSWindowStyleMask,
-};
-use objc2_foundation::{
-    MainThreadMarker, NSDate, NSPoint, NSRect, NSRunLoop, NSSize, NSString, NSTimer,
-};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -83,20 +76,6 @@ thread_local! {
     static SCREENS: RefCell<Vec<Screen>> = const { RefCell::new(Vec::new()) };
     /// While a display is being created, removed or renamed, a rescan must not restore it.
     static MUTATIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
-    static PREVIEW: RefCell<Option<Preview>> = const { RefCell::new(None) };
-}
-
-/// A floating window showing a screen live.
-struct Preview {
-    name: String,
-    display: u32,
-    window: Retained<NSWindow>,
-    view: Retained<NSView>,
-    timer: Retained<NSTimer>,
-}
-
-fn mtm() -> MainThreadMarker {
-    unsafe { MainThreadMarker::new_unchecked() }
 }
 
 fn class(name: &str) -> &'static AnyClass {
@@ -414,136 +393,6 @@ pub fn remove_and_wait(name: &str) -> bool {
         wait_until_gone(id);
     }
     removed
-}
-
-/// Opens a live preview of a screen, at most one at a time.
-pub fn start_preview(name: &str, target: &crate::ui::Actions) -> Result<(), String> {
-    let target: &AnyObject = unsafe { &*(target as *const crate::ui::Actions as *const AnyObject) };
-    let Some(info) = info(name) else {
-        return Err(format!("no virtual screen named {name}"));
-    };
-    stop_preview();
-    let mtm = mtm();
-    unsafe {
-        let aspect = info.width as f64 / info.height.max(1) as f64;
-        let width = 960.0_f64.min(info.width as f64);
-        let height = (width / aspect).round().max(240.0);
-        let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
-
-        let window = NSWindow::initWithContentRect_styleMask_backing_defer(
-            mtm.alloc(),
-            frame,
-            NSWindowStyleMask::Titled | NSWindowStyleMask::Closable,
-            NSBackingStoreType::NSBackingStoreBuffered,
-            false,
-        );
-        window.setReleasedWhenClosed(false);
-        window.setTitle(&NSString::from_str(&format!("{} preview", info.name)));
-        window.setContentAspectRatio(NSSize::new(width, height));
-        window.setLevel(NSFloatingWindowLevel);
-        window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
-                | NSWindowCollectionBehavior::FullScreenAuxiliary,
-        );
-        window.setHidesOnDeactivate(false);
-
-        let view = NSView::initWithFrame(mtm.alloc(), frame);
-        view.setWantsLayer(true);
-        window.setContentView(Some(&view));
-        window.center();
-        window.orderFrontRegardless();
-
-        let timer = NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            1.0 / 30.0,
-            target,
-            objc2::sel!(previewTick:),
-            None,
-            true,
-        );
-        PREVIEW.with(|slot| {
-            *slot.borrow_mut() = Some(Preview {
-                name: info.name.clone(),
-                display: info.id,
-                window,
-                view,
-                timer,
-            });
-        });
-    }
-    preview_tick();
-    Ok(())
-}
-
-/// One frame of the preview, driven by the timer in the UI target.
-pub fn preview_tick() {
-    let Some((display, view)) = PREVIEW.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|preview| (preview.display, preview.view.clone()))
-    }) else {
-        return;
-    };
-    let image = unsafe { CGDisplayCreateImage(display) };
-    if image.is_null() {
-        return;
-    }
-    unsafe {
-        if let Some(layer) = view.layer() {
-            let content: &AnyObject = &*(image as *const AnyObject);
-            layer.setContents(Some(content));
-            layer.setContentsScale(2.0);
-        }
-        CGImageRelease(image);
-    }
-}
-
-/// Closes the preview and stops its timer.
-pub fn stop_preview() {
-    let preview = PREVIEW.with(|slot| slot.borrow_mut().take());
-    if let Some(preview) = preview {
-        unsafe {
-            preview.timer.invalidate();
-            preview.window.orderOut(None);
-            preview.window.close();
-        }
-    }
-}
-
-/// Called when the window is closed by its own close button, so the timer stops without closing
-/// the window a second time.
-pub fn preview_closed() {
-    let preview = PREVIEW.with(|slot| slot.borrow_mut().take());
-    if let Some(preview) = preview {
-        unsafe {
-            preview.timer.invalidate();
-        }
-    }
-}
-
-pub fn preview_open() -> bool {
-    PREVIEW.with(|slot| slot.borrow().is_some())
-}
-
-/// The screen currently being previewed, if any.
-pub fn preview_name() -> Option<String> {
-    PREVIEW.with(|slot| slot.borrow().as_ref().map(|preview| preview.name.clone()))
-}
-
-pub fn preview_window_ptr() -> Option<*mut NSWindow> {
-    PREVIEW.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(|preview| &*preview.window as *const NSWindow as *mut NSWindow)
-    })
-}
-
-pub fn toggle_preview(name: &str, target: &crate::ui::Actions) -> Result<(), String> {
-    if preview_open() {
-        stop_preview();
-        Ok(())
-    } else {
-        start_preview(name, target)
-    }
 }
 
 #[link(name = "ImageIO", kind = "framework")]

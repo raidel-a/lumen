@@ -125,6 +125,8 @@ pub struct Ui {
     agent_picker: Option<Retained<NSPopUpButton>>,
     agent_session_names: Vec<String>,
     agent_note: Option<String>,
+    /// Live thumbnails on the Virtual Displays page, keyed by screen name.
+    screen_thumbs: Vec<(String, Retained<NSView>)>,
 }
 
 impl Default for Ui {
@@ -156,6 +158,7 @@ impl Default for Ui {
             agent_picker: None,
             agent_session_names: Vec::new(),
             agent_note: None,
+            screen_thumbs: Vec::new(),
         }
     }
 }
@@ -977,6 +980,7 @@ unsafe fn agent_phase_row(theme: &Theme, name: &str, phase: crate::agent::Phase)
 }
 
 unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
+    UI.with(|ui| ui.borrow_mut().screen_thumbs.clear());
     let (scroll, stack) = page_stack(host);
     UI.with(|ui| {
         let mut ui = ui.borrow_mut();
@@ -1029,6 +1033,26 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
         let refresh = config.as_ref().map(|config| config.refresh).unwrap_or(60.0);
         let hidpi = config.as_ref().map(|config| config.hidpi).unwrap_or(false);
         let auto = config.as_ref().map(|config| config.auto_create).unwrap_or(true);
+
+        let thumb_width = 176.0;
+        let thumb_height = (thumb_width * screen.height as f64 / screen.width.max(1) as f64)
+            .clamp(64.0, 112.0);
+        let thumb = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(thumb_width, thumb_height)));
+        thumb.setWantsLayer(true);
+        if let Some(layer) = thumb.layer() {
+            layer.setCornerRadius(6.0);
+            layer.setMasksToBounds(true);
+            layer.setContentsScale(2.0);
+        }
+        UI.with(|ui| ui.borrow_mut().screen_thumbs.push((screen.name.clone(), thumb.clone())));
+        let thumb_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&thumb_row);
+        fix_height(&thumb_row, thumb_height);
+        thumb_row.addSubview(&thumb);
+        thumb.leadingAnchor().constraintEqualToAnchor(&thumb_row.leadingAnchor()).setActive(true);
+        thumb.topAnchor().constraintEqualToAnchor(&thumb_row.topAnchor()).setActive(true);
+        thumb.widthAnchor().constraintEqualToConstant(thumb_width).setActive(true);
+        thumb.heightAnchor().constraintEqualToConstant(thumb_height).setActive(true);
 
         let name_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
         auto_layout(&name_row);
@@ -1093,7 +1117,7 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
         tag(&remove, index as isize);
         remove.trailingAnchor().constraintEqualToAnchor(&actions_row.trailingAnchor()).setActive(true);
         remove.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
-        let shown = crate::screens::preview_name().as_deref() == Some(screen.name.as_str());
+        let shown = crate::preview::is_open(&screen.name);
         let preview = button(if shown { "Hide" } else { "Preview" }, &actions_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(screenPreview:));
         auto_layout(&preview);
         fix_width(&preview, 76.0);
@@ -1110,7 +1134,7 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
         apply.centerYAnchor().constraintEqualToAnchor(&actions_row.centerYAnchor()).setActive(true);
         hint.trailingAnchor().constraintLessThanOrEqualToAnchor_constant(&apply.leadingAnchor(), -12.0).setActive(true);
 
-        let group = group_container(theme, vec![name_row, geometry_row, actions_row]);
+        let group = group_container(theme, vec![thumb_row, name_row, geometry_row, actions_row]);
         hug_height(&group);
         stack.addArrangedSubview(&group);
         stack.setCustomSpacing_afterView(16.0, &group);
@@ -1674,6 +1698,9 @@ fn build_page(host: &NSView, model: &Model, page: Page) {
     UI.with(|ui| {
         ui.borrow_mut().scroll = None;
     });
+    if page != Page::Virtual {
+        crate::preview::set_thumbnails_visible(false);
+    }
     unsafe { match page {
         Page::General => build_general(host, model, &theme),
         Page::Displays => build_displays(host, model, &theme),
@@ -1686,6 +1713,7 @@ fn build_page(host: &NSView, model: &Model, page: Page) {
         Page::About => build_about(host, model, &theme),
     } }
     UI.with(|ui| ui.borrow_mut().built_page = Some(page));
+    crate::preview::set_thumbnails_visible(page == Page::Virtual);
 }
 
 fn build_chrome(window: &NSWindow) {
@@ -1750,6 +1778,42 @@ fn build_chrome(window: &NSWindow) {
 
 pub fn target() -> Option<Retained<Actions>> {
     ACTIONS.with(|slot| slot.borrow().clone())
+}
+
+/// Whether the Virtual Displays page is on screen, so thumbnails should keep refreshing.
+pub(crate) fn thumbnails_visible() -> bool {
+    UI.with(|ui| {
+        let ui = ui.borrow();
+        ui.page == Page::Virtual
+            && ui.window.as_ref().map(|window| window.isVisible()).unwrap_or(false)
+            && !ui.screen_thumbs.is_empty()
+    })
+}
+
+/// Sets a screen thumbnail from an owned CGImage reference, which this function releases.
+pub(crate) fn set_thumbnail(name: &str, image: *mut std::ffi::c_void) {
+    if image.is_null() {
+        return;
+    }
+    let view = UI.with(|ui| {
+        ui.borrow()
+            .screen_thumbs
+            .iter()
+            .find(|(screen, _)| screen == name)
+            .map(|(_, view)| view.clone())
+    });
+    match view {
+        Some(view) => unsafe {
+            if let Some(layer) = view.layer() {
+                layer.setContents(Some(&*(image as *const AnyObject)));
+                layer.setContentsScale(view.window().map(|window| window.backingScaleFactor()).unwrap_or(2.0));
+            }
+            core_foundation::base::CFRelease(image as core_foundation::base::CFTypeRef);
+        },
+        None => unsafe {
+            core_foundation::base::CFRelease(image as core_foundation::base::CFTypeRef);
+        },
+    }
 }
 
 pub fn init() -> Retained<Actions> {
@@ -2405,7 +2469,28 @@ declare_class!(
 
         #[method(previewTick:)]
         fn preview_tick(&self, _timer: *mut AnyObject) {
-            crate::screens::preview_tick();
+            crate::preview::tick();
+        }
+
+        #[method(thumbnailTick:)]
+        fn thumbnail_tick(&self, _timer: *mut AnyObject) {
+            crate::preview::thumbnail_tick();
+        }
+
+        #[method(previewClose:)]
+        fn preview_close(&self, sender: *mut AnyObject) {
+            let window: *mut NSWindow = unsafe { msg_send![sender, window] };
+            if let Some(window) = unsafe { window.as_ref() } {
+                crate::preview::window_closed(window);
+            }
+        }
+
+        #[method(previewPause:)]
+        fn preview_pause(&self, sender: *mut AnyObject) {
+            let window: *mut NSWindow = unsafe { msg_send![sender, window] };
+            if let Some(window) = unsafe { window.as_ref() } {
+                crate::preview::toggle_paused(window);
+            }
         }
 
         #[method(menuControlChanged:)]
@@ -2519,9 +2604,7 @@ declare_class!(
             let Some(screen) = crate::screens::list().get(index).cloned() else {
                 return;
             };
-            if crate::screens::preview_name().as_deref() == Some(screen.name.as_str()) {
-                crate::screens::stop_preview();
-            } else if let Err(error) = crate::screens::start_preview(&screen.name, self) {
+            if let Err(error) = crate::preview::toggle(&screen.name) {
                 message(&error);
             }
             crate::after_change();
@@ -3165,17 +3248,35 @@ declare_class!(
     }
 
     unsafe impl NSWindowDelegate for Actions {
+        #[method(windowDidChangeOcclusionState:)]
+        fn window_did_change_occlusion_state(&self, notification: &NSNotification) {
+            if let Some(object) = unsafe { notification.object() } {
+                let window = unsafe { &*(&*object as *const AnyObject as *const NSWindow) };
+                crate::preview::occlusion_changed(window);
+            }
+        }
+
         #[method(windowWillClose:)]
         fn window_will_close(&self, notification: &NSNotification) {
-            // The preview window owns its own timer; stop it without closing the window again.
-            if let Some(object) = unsafe { notification.object() } {
-                let closing = &*object as *const AnyObject as *const ();
-                if crate::screens::preview_window_ptr().map(|ptr| ptr as *const ()) == Some(closing)
-                {
-                    crate::screens::preview_closed();
-                    return;
-                }
+            let Some(object) = (unsafe { notification.object() }) else {
+                return;
+            };
+            let closing = unsafe { &*(&*object as *const AnyObject as *const NSWindow) };
+            if crate::preview::name_for_window(closing).is_some() {
+                // The preview owns its stream; close it without touching the settings window.
+                crate::preview::window_closed(closing);
+                return;
             }
+            let settings = UI.with(|ui| ui.borrow().window.clone());
+            let is_settings = settings
+                .as_ref()
+                .map(|settings| std::ptr::eq(&**settings as *const NSWindow, closing as *const NSWindow))
+                .unwrap_or(false);
+            if !is_settings {
+                // Some other window this app owns closed; it is not the settings window.
+                return;
+            }
+            crate::preview::set_thumbnails_visible(false);
             let window = UI.with(|ui| ui.borrow_mut().window.take());
             if let Some(window) = &window {
                 if let Some(content) = window.contentView() {

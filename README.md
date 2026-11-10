@@ -102,6 +102,10 @@ and the private display API means direct distribution only, never the App Store.
   behind the M1 HDMI bridge), reads and writes VCP features over I2C, and parses capabilities
   strings for advertised input codes.
 - **Signal control** (`src/native`): `CGSConfigureDisplayEnabled`, resolved with `dlsym`.
+- **Previews** (`src/bin/lumen/preview.rs`): ScreenCaptureKit streams, one per screen, with a
+  borderless floating window, hover controls and geometry stored in the config. The 0.2.2 bindings
+  that match objc2 0.5 leave a few selectors out, so those are called with `msg_send!` in this
+  module only.
 - **Built-in brightness** (`src/bin/lumen/brightness.rs`): the private
   `DisplayServices.framework` (`DisplayServicesGetBrightness`, `SetBrightness`,
   `CanChangeBrightness`), resolved with `dlopen`/`dlsym` so the app still starts when the framework
@@ -169,10 +173,12 @@ pages and reads much higher.
 
 | state | footprint |
 | --- | --- |
-| launched, settings never opened | 13 MB |
-| settings open (source list and pages) | 29 MB |
-| settings closed again | 30 MB |
+| launched, settings never opened | 12 MB |
+| settings open (source list, pages, live thumbnails) | 29 MB |
+| settings closed again | 28 MB |
+| preview open | 29 MB |
 | idle CPU | 0% |
+| preview visible, static captured screen | 0.2% CPU |
 
 The launch state is a status item and nothing else. Opening settings brings AppKit's window
 machinery and the view hierarchy (~14 MB); closing releases the window and its views, while
@@ -216,6 +222,7 @@ lumen virtual list                           # all live virtual screens
 lumen virtual bounds --name Agent            # geometry after any rearrangement
 lumen virtual screenshot --name Agent --out frame.png
 lumen virtual preview --name Agent            # floating live window, --hide to close
+lumen virtual previews                        # previews that are open now
 lumen virtual reboot --name Agent             # drop and recreate, for testing recovery
 lumen virtual rename --name Agent --to Workspace
 lumen virtual remove --name Agent
@@ -229,7 +236,7 @@ process exits and breaks removal). At most four virtual screens can exist, sizes
 (default: newest 20).
 
 Settings > Virtual Displays edits the name, geometry, 1x/2x, refresh and auto-create of each
-screen, with preview, apply and remove. Renaming recreates the display because its name is fixed
+screen, with a live thumbnail, preview, apply and remove. Renaming recreates the display because its name is fixed
 at creation: the agent browser on it is closed, its capture folder moves, and its desktop
 position may change. A display mutation guard keeps a rescan from restoring a screen while it is
 being created, removed or renamed. Each screen's menu entry also has preview and remove actions.
@@ -238,6 +245,27 @@ The same page holds the agent workspace defaults (start headless, home page, reo
 session at launch), an Agents panel that lists live sessions with Screenshot and Stop and starts
 new ones on the selected display, and capture retention (keep the last 5, 20, 50 or all, open or
 delete the folder).
+
+## Preview windows
+
+A preview is a small always-on-top picture-in-picture window for one virtual screen. Frames come
+from ScreenCaptureKit at 30fps, downscaled to the window, so a preview costs far less than the old
+full-resolution polling capture and stops entirely while paused or occluded.
+
+- Up to four previews, one per virtual screen, at the same time. Each is toggled independently from
+  the screen's menu entry, the Virtual Displays page or `lumen virtual preview`.
+- Borderless and rounded, with a hover bar holding the screen name, resolution, pause/resume and
+  close. Drag anywhere to move it; resize from the edges with the aspect ratio locked.
+- The first preview opens in the bottom-right corner of the screen under the pointer, and later
+  previews step up and left instead of covering each other. Size and position are remembered per
+  screen in `config.json` and restored next time. Previews do not reopen themselves at launch.
+- Pausing, occlusion or a hidden app stops the stream. If no frame arrives for three seconds the
+  window says so instead of freezing silently.
+- Removing or renaming a screen closes its preview. Settings thumbnails reuse a running preview's
+  latest frame, or take a still with ScreenCaptureKit otherwise.
+
+Screen Recording permission is required, as it is for screenshots. Without it the preview opens
+with a note instead of a picture.
 
 ### Handing a screen to an agent
 

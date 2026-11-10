@@ -78,6 +78,19 @@ pub struct VirtualScreenConfig {
     pub refresh: f64,
     /// Recreate this screen at launch and after wake.
     pub auto_create: bool,
+    /// Where the last preview window sat, in screen coordinates. Geometry only: previews do not
+    /// reopen themselves at launch.
+    #[serde(default)]
+    pub preview: Option<PreviewFrame>,
+}
+
+/// A preview window frame, kept in AppKit screen coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PreviewFrame {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
 }
 
 impl Default for VirtualScreenConfig {
@@ -89,6 +102,7 @@ impl Default for VirtualScreenConfig {
             hidpi: false,
             refresh: 60.0,
             auto_create: true,
+            preview: None,
         }
     }
 }
@@ -384,6 +398,14 @@ impl Config {
         }
     }
 
+    /// Stores the last preview geometry for a screen. Geometry only; nothing reopens at launch.
+    pub fn set_preview_frame(&mut self, name: &str, frame: Option<PreviewFrame>) {
+        if let Some(screen) = self.virtual_screens.iter_mut().find(|screen| screen.name == name) {
+            screen.preview = frame;
+            self.save();
+        }
+    }
+
     pub fn display(&self, key: &str) -> Option<&DisplayConfig> {
         self.displays.iter().find(|entry| entry.key == key)
     }
@@ -506,6 +528,36 @@ mod tests {
         assert!(config.agent_headless);
         assert_eq!(config.capture_limit, Some(20));
         assert_eq!(config.virtual_defaults.width, 1920);
+    }
+
+    #[test]
+    fn preview_geometry_is_optional_and_round_trips() {
+        let legacy: VirtualScreenConfig = serde_json::from_str(
+            r#"{"name":"Agent","width":1920,"height":1080,"hidpi":false,"refresh":60.0,"auto_create":true}"#,
+        )
+        .expect("legacy screen");
+        assert_eq!(legacy.preview, None);
+
+        let mut config = Config::default();
+        config.virtual_screens.push(legacy);
+        config.set_preview_frame(
+            "Agent",
+            Some(PreviewFrame {
+                x: 10.0,
+                y: 20.0,
+                width: 480.0,
+                height: 270.0,
+            }),
+        );
+        assert_eq!(
+            config.virtual_screen("Agent").and_then(|screen| screen.preview),
+            Some(PreviewFrame {
+                x: 10.0,
+                y: 20.0,
+                width: 480.0,
+                height: 270.0,
+            })
+        );
     }
 
     #[test]
