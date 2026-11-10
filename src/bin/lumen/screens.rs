@@ -165,9 +165,7 @@ fn create(config: &VirtualScreenConfig) -> Result<Screen, String> {
         let _: () = msg_send![settings, setHiDPI: 1u32];
         let _: () = msg_send![settings, setModes: modes];
         let applied: bool = msg_send![display, applySettings: settings];
-        if std::env::var_os("LUMEN_TRACE").is_some() {
-            eprintln!("applySettings -> {applied}");
-        }
+        crate::log::trace(format!("applySettings -> {applied}"));
         if !applied {
             for object in [settings, modes, descriptor, display] {
                 let _: () = msg_send![object, release];
@@ -196,15 +194,15 @@ fn create(config: &VirtualScreenConfig) -> Result<Screen, String> {
             {
                 break;
             }
-            if std::env::var_os("LUMEN_TRACE").is_some() && started.elapsed().as_millis() % 500 < 12 {
-                eprintln!(
+            if started.elapsed().as_millis() % 500 < 12 {
+                crate::log::trace(format!(
                     "waiting for {id}: active={} bounds={}x{} pixels={}x{}",
                     cg.is_active(),
                     bounds.size.width,
                     bounds.size.height,
                     cg.pixels_wide(),
                     cg.pixels_high()
-                );
+                ));
             }
             if started.elapsed() > Duration::from_secs(5) {
                 for object in [settings, modes, descriptor, display] {
@@ -315,6 +313,10 @@ pub fn set_renaming(active: bool) {
     RENAMING.with(|flag| flag.set(active));
 }
 
+pub fn is_renaming() -> bool {
+    RENAMING.with(|flag| flag.get())
+}
+
 pub fn restore(config: &Config) {
     if RENAMING.with(|flag| flag.get()) {
         return;
@@ -329,11 +331,9 @@ pub fn restore(config: &Config) {
         }
         match ensure(screen) {
             Ok(info) => {
-                if std::env::var_os("LUMEN_TRACE").is_some() {
-                    eprintln!("virtual screen restored: {} id={}", info.name, info.id);
-                }
+                crate::log::info(format!("virtual screen restored: {} id={}", info.name, info.id));
             }
-            Err(error) => eprintln!("virtual screen {} failed: {error}", screen.name),
+            Err(error) => crate::log::warn(format!("virtual screen {} failed: {error}", screen.name)),
         }
     }
 }

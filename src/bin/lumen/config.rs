@@ -175,9 +175,51 @@ pub struct DisplayConfig {
     pub current_input: Option<CurrentInput>,
 }
 
+/// Where the settings window should open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SettingsDisplay {
+    /// The display whose menu bar the command came from.
+    Invocation,
+    /// The virtual display named Agent.
+    Agent,
+    /// The primary display.
+    Main,
+    /// The display used last time.
+    Last,
+}
+
+impl Default for SettingsDisplay {
+    fn default() -> Self {
+        Self::Invocation
+    }
+}
+
+fn default_settings_page() -> String {
+    "general".to_string()
+}
+
+fn default_settings_width() -> f64 {
+    920.0
+}
+
+fn default_settings_height() -> f64 {
+    880.0
+}
+
+/// Schema version for config migrations. Bump when a field needs rewriting.
+pub const CONFIG_VERSION: u32 = 2;
+
+fn config_version() -> u32 {
+    CONFIG_VERSION
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    /// Schema version. Missing means a pre-versioned file and is treated as current.
+    #[serde(default = "config_version")]
+    pub version: u32,
     /// Bring every released display back before the app exits.
     pub reclaim_on_quit: bool,
     /// Reclaim a released display after this many minutes (None keeps it released).
@@ -207,11 +249,26 @@ pub struct Config {
     /// How many captures to keep per folder; `None` keeps everything.
     #[serde(default = "default_capture_limit")]
     pub capture_limit: Option<u32>,
+    /// Display policy for the settings window.
+    #[serde(default)]
+    pub settings_display: SettingsDisplay,
+    /// Last settings page, restored on open.
+    #[serde(default = "default_settings_page")]
+    pub settings_page: String,
+    /// Display name used when the policy is `Last`.
+    #[serde(default)]
+    pub settings_last_screen: Option<String>,
+    /// Settings window size, persisted when it closes.
+    #[serde(default = "default_settings_width")]
+    pub settings_width: f64,
+    #[serde(default = "default_settings_height")]
+    pub settings_height: f64,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            version: CONFIG_VERSION,
             reclaim_on_quit: true,
             auto_reclaim_minutes: None,
             show_brightness: true,
@@ -225,30 +282,64 @@ impl Default for Config {
             agent_reopen: false,
             last_agent: None,
             capture_limit: Some(20),
+            settings_display: SettingsDisplay::Invocation,
+            settings_page: default_settings_page(),
+            settings_last_screen: None,
+            settings_width: default_settings_width(),
+            settings_height: default_settings_height(),
         }
     }
 }
 
+fn write_atomic(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let temp = path.with_extension(format!(
+        "json.tmp.{}.{}",
+        std::process::id(),
+        sequence
+    ));
+    let result = (|| {
+        let mut file = std::fs::File::create(&temp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
 impl Config {
     pub fn path() -> PathBuf {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-        home.join("Library/Application Support/Lumen/config.json")
+        Self::support_dir().join("config.json")
     }
 
     pub fn load() -> Self {
-        std::fs::read_to_string(Self::path())
+        let mut config: Self = std::fs::read_to_string(Self::path())
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if config.version == 0 {
+            config.version = CONFIG_VERSION;
+        }
+        config
     }
 
+    /// Writes through a temporary file so a crash or a second writer cannot leave half a file.
     pub fn save(&self) {
         let path = Self::path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
+        let Ok(text) = serde_json::to_string_pretty(self) else {
+            return;
+        };
+        if write_atomic(&path, &text).is_err() {
+            crate::log::warn(format!("could not save {}", path.display()));
         }
     }
 
@@ -319,7 +410,13 @@ impl Config {
     }
 
     /// The socket the menu-bar app listens on for CLI and agent commands.
+    /// A dev or test build can point at its own directory and never touch the real config.
     pub fn support_dir() -> PathBuf {
+        if let Some(dir) = std::env::var_os("LUMEN_SUPPORT_DIR") {
+            if !dir.is_empty() {
+                return PathBuf::from(dir);
+            }
+        }
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         home.join("Library/Application Support/Lumen")
     }
@@ -382,5 +479,45 @@ impl Config {
         self.display(key)
             .map(|entry| entry.inputs.iter().filter(|input| input.enabled).cloned().collect())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_payload_gets_versioned_defaults() {
+        let config: Config = serde_json::from_str(
+            r#"{"reclaim_on_quit":false,"show_brightness":false}"#,
+        )
+        .expect("legacy config");
+        assert_eq!(config.version, CONFIG_VERSION);
+        assert_eq!(config.settings_display, SettingsDisplay::Invocation);
+        assert_eq!(config.settings_page, "general");
+        assert!(config.agent_headless);
+        assert_eq!(config.capture_limit, Some(20));
+        assert_eq!(config.virtual_defaults.width, 1920);
+    }
+
+    #[test]
+    fn settings_display_round_trips() {
+        let mut config = Config::default();
+        config.settings_display = SettingsDisplay::Agent;
+        let text = serde_json::to_string(&config).expect("serialize");
+        let back: Config = serde_json::from_str(&text).expect("parse");
+        assert_eq!(back.settings_display, SettingsDisplay::Agent);
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_previous_file() {
+        let dir = std::env::temp_dir().join(format!("lumen-config-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("config.json");
+        write_atomic(&path, "one").expect("first write");
+        write_atomic(&path, "two").expect("second write");
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), "two");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -33,6 +33,28 @@ open dist/Lumen.app
 Requires macOS 27 on Apple silicon. No accessibility or root permissions; Screen Recording is only
 asked for when you capture or preview a display.
 
+## Development
+
+The debug binary shares the installed app's support directory by default. Use the dev harness when
+you need isolation or a real bundle identity:
+
+```sh
+./scripts/dev/run.sh                 # builds dist/Lumen Dev.app, launches with its own support dir
+./scripts/dev/stop.sh                # stops only the pid in dist/lumen-dev.pid
+./scripts/dev/reset.sh               # clears the dev support dir
+./scripts/dev/shot.sh --page virtual --screen agent --out /tmp/settings.png
+```
+
+- The dev app uses `~/Library/Application Support/Lumen Dev`, so it cannot overwrite the installed
+  config, screens or agent profiles.
+- `LUMEN_SUPPORT_DIR` selects a support directory for any build, including the CLI.
+- `lumen settings [--page general|displays|virtual|about] [--screen invocation|agent|main|last]`
+  opens a page through the control socket. `lumen settings state` reports the page and screen.
+- `scripts/dev/ax.swift` lists windows and presses or sets controls by title or description.
+
+Settings placement is a preference: display I click from, Agent, main display, or last display.
+The default is the display whose menu bar the command came from.
+
 ## Packaging
 
 `scripts/bundle.sh` builds the app bundle, compiles `assets/lumen.icon`, writes the version and build
