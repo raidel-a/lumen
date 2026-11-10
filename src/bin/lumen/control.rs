@@ -172,9 +172,29 @@ fn handle(line: &str) -> String {
                 }
             }
         }
+        "virtual.reboot" => {
+            let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
+                return error("missing name");
+            };
+            let config = on_main_value({
+                let name = name.clone();
+                move || crate::with_model(|model| model.config.virtual_screen(&name).cloned())
+            });
+            let config = match config {
+                Ok(Some(config)) => config,
+                Ok(None) => return error("no such virtual screen"),
+                Err(message) => return error(message),
+            };
+            match on_main_value(move || crate::screens::reboot(&config)) {
+                Ok(Ok(info)) => ok_value(json!({ "screen": screen_json(&info) })),
+                Ok(Err(message)) => error(message),
+                Err(message) => error(message),
+            }
+        }
         "agent.start" | "agent.chrome" => agent_start(&request),
         "agent.stop" => agent_stop(&request),
         "agent.status" => agent_status(&request),
+        "agent.move" => agent_move(&request),
         other => error(format!("unknown command {other}")),
     }
 }
@@ -196,12 +216,20 @@ fn valid_name(name: &str) -> Result<(), String> {
 }
 
 fn ensure(request: &Value, name: String) -> String {
-    let mut config = crate::with_model(|model| model.config.virtual_screen(&name).cloned())
-        .unwrap_or_else(|| {
-            let mut config = VirtualScreenConfig::default();
-            config.name = name.clone();
-            config
-        });
+    let stored = on_main_value({
+        let name = name.clone();
+        move || crate::with_model(|model| model.config.virtual_screen(&name).cloned())
+    });
+    let stored = match stored {
+        Ok(stored) => stored,
+        Err(message) => return error(message),
+    };
+    let existing = stored.is_some();
+    let mut config = stored.unwrap_or_else(|| {
+        let mut config = VirtualScreenConfig::default();
+        config.name = name.clone();
+        config
+    });
     config.name = name.clone();
     if let Some(width) = request.get("width").and_then(Value::as_u64) {
         config.width = width as u32;
@@ -228,7 +256,6 @@ fn ensure(request: &Value, name: String) -> String {
         return error("a 2x screen is limited to 3840x2160 logical points");
     }
 
-    let existing = crate::with_model(|model| model.config.virtual_screen(&name).is_some());
     if !existing {
         let count = on_main_value(|| crate::screens::list().len()).unwrap_or(0);
         if count >= crate::screens::MAX_SCREENS {
@@ -431,6 +458,21 @@ fn agent_status(request: &Value) -> String {
     });
     match reply {
         Ok((session, screen, alive)) => {
+            let (window, window_error) = if alive {
+                match session.as_ref().map(|session| crate::cdp::window(session.port)) {
+                    Some(Ok(window)) => (Some(window), Value::Null),
+                    Some(Err(message)) => (None, json!(message)),
+                    None => (None, Value::Null),
+                }
+            } else {
+                (None, Value::Null)
+            };
+            let on_screen = match (&window, &screen) {
+                (Some(window), Some(screen)) => {
+                    window.inside(screen.x, screen.y, screen.width, screen.height)
+                }
+                _ => false,
+            };
             let session_json = session
                 .as_ref()
                 .map(|session| crate::agent::session_json(session, None))
@@ -439,8 +481,30 @@ fn agent_status(request: &Value) -> String {
                 "screen": screen.map(|info| screen_json(&info)).unwrap_or(Value::Null),
                 "session": session_json,
                 "alive": alive,
+                "window": window.map(|window| window.json()).unwrap_or(Value::Null),
+                "window_error": window_error,
+                "on_screen": on_screen,
             }))
         }
+        Err(message) => error(message),
+    }
+}
+
+fn agent_move(request: &Value) -> String {
+    let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
+        return error("missing name");
+    };
+    let session = match on_main_value(move || crate::agent::session(&name)) {
+        Ok(Some(session)) => session,
+        Ok(None) => return error("no agent session"),
+        Err(message) => return error(message),
+    };
+    let left = request.get("left").and_then(Value::as_f64).unwrap_or(0.0);
+    let top = request.get("top").and_then(Value::as_f64).unwrap_or(0.0);
+    let width = request.get("width").and_then(Value::as_f64).unwrap_or(1200.0);
+    let height = request.get("height").and_then(Value::as_f64).unwrap_or(800.0);
+    match crate::cdp::set_window(session.port, left, top, width, height) {
+        Ok(window) => ok_value(json!({ "window": window.json() })),
         Err(message) => error(message),
     }
 }

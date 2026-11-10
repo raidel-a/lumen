@@ -73,6 +73,12 @@ fn virtual_command(args: &[String]) -> Value {
             };
             send(json!({ "cmd": "virtual.bounds", "name": name }))
         }
+        "reboot" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            send(json!({ "cmd": "virtual.reboot", "name": name }))
+        }
         "remove" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
@@ -128,6 +134,18 @@ fn agent_command(args: &[String]) -> Value {
             };
             send(json!({ "cmd": "agent.stop", "name": name }))
         }
+        "move" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            let mut request = json!({ "cmd": "agent.move", "name": name });
+            for (flag, key) in [("--left", "left"), ("--top", "top"), ("--width", "width"), ("--height", "height")] {
+                if let Some(value) = option(args, flag).and_then(|value| value.parse::<f64>().ok()) {
+                    request[key] = json!(value);
+                }
+            }
+            send(request)
+        }
         "status" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
@@ -168,6 +186,7 @@ lumen virtual ensure --name <name> [--width N] [--height N] [--hidpi] [--refresh
 lumen virtual bounds --name <name>
 lumen virtual screenshot --name <name> [--out path.png]
 lumen virtual preview --name <name> [--hide]
+lumen virtual reboot --name <name>
 lumen virtual remove --name <name>
 lumen agent start --name <screen> [--url URL] [--port N] [--browser bundle-id|path.app]
 lumen agent stop --name <screen>

@@ -1,6 +1,7 @@
 //! Lumen: native menu bar, AppKit settings window.
 
 mod agent;
+mod cdp;
 mod cli;
 mod config;
 mod control;
@@ -139,6 +140,27 @@ fn spawn_scan() {
             let config = with_model(|model| model.config.clone());
             screens::restore(&config);
             after_change();
+
+            // A display that comes back after wake can leave the agent window on another
+            // screen. Move it home once the arrangement has settled.
+            for session in agent::sessions() {
+                if !agent::session_alive(&session) {
+                    continue;
+                }
+                let Some(info) = screens::info(&session.name) else {
+                    continue;
+                };
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(1200));
+                    if let Err(error) =
+                        cdp::place_window(session.port, info.x, info.y, info.width, info.height)
+                    {
+                        if std::env::var_os("LUMEN_TRACE").is_some() {
+                            eprintln!("window recovery: {error}");
+                        }
+                    }
+                });
+            }
         });
     });
 }
