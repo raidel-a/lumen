@@ -82,6 +82,20 @@ case "press":
         exit(1)
     }
     print(AXUIElementPerformAction(element, kAXPressAction as CFString).rawValue)
+case "select":
+    guard let element = find_in_windows(key) else {
+        print("not found")
+        exit(1)
+    }
+    var row: AXUIElement? = element
+    while let current = row, text(current, kAXRoleAttribute) != "AXRow" {
+        row = (attr(current, kAXParentAttribute) as! AXUIElement?)
+    }
+    guard let row = row else {
+        print("no row")
+        exit(1)
+    }
+    print(AXUIElementSetAttributeValue(row, kAXSelectedAttribute as CFString, kCFBooleanTrue).rawValue)
 case "set", "read":
     guard let element = find_in_windows(key) else {
         print("not found")

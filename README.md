@@ -85,9 +85,10 @@ and the private display API means direct distribution only, never the App Store.
   custom item views holding real `NSSlider`s, so brightness, contrast and volume can be dragged
   right in the menu. Sliders sit in the display's own menu rather than a nested submenu, because
   a second-level submenu opens off-screen when the status item is near the right edge.
-- **Settings window** (`src/bin/lumen/ui.rs`): a sidebar on the left (General, Displays, Virtual
-  Displays, About) and scrolling grouped pages on the right, built with stack views and Auto
-  Layout, 920 pt wide and resizable.
+- **Settings window** (`src/bin/lumen/ui.rs`): a native source list on the left (General,
+  Displays, Virtual Displays, About) and scrolling grouped pages on the right, built with stack
+  views and Auto Layout, 920 pt wide and resizable. The display list is a source list too, so both
+  have keyboard selection and accessibility.
   One target class handles every control; `tag` values say which input row or screen a button
   belongs to. Pages rebuild in place after model changes, while unsaved text edits are carried
   across rescans. Closing releases the window and its views.
