@@ -268,6 +268,7 @@ pub fn apply_control(display_id: u32, code: u8, value: u16) {
 
 /// Removes a virtual screen and closes the browser started on it. Main thread.
 pub fn remove_screen(name: &str) -> (bool, bool) {
+    let _mutation = screens::begin_mutation();
     let stopped = agent::stop(name).unwrap_or(false);
     let removed = screens::remove(name);
     with_model(|model| {
@@ -292,6 +293,7 @@ pub fn create_screen(name: &str, width: u32, height: u32, hidpi: bool) -> Result
 
 /// Creates a screen from a complete configuration and records it. Main thread.
 pub fn create_screen_with(config: config::VirtualScreenConfig) -> Result<screens::ScreenInfo, String> {
+    let _mutation = screens::begin_mutation();
     let info = screens::ensure(&config)?;
     with_model(|model| model.config.upsert_virtual_screen(config));
     after_change();
@@ -313,14 +315,7 @@ pub fn rename_screen(old: &str, desired: &config::VirtualScreenConfig) -> Result
         return Err(format!("a virtual screen named {new} already exists"));
     }
 
-    struct Guard;
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            screens::set_renaming(false);
-        }
-    }
-    screens::set_renaming(true);
-    let _guard = Guard;
+    let _mutation = screens::begin_mutation();
 
     if screens::preview_name().as_deref() == Some(old) {
         screens::stop_preview();

@@ -21,6 +21,8 @@ pub struct DisplayEntry {
     pub muted: Option<bool>,
     /// What the monitor reports for VCP 0x60, when the firmware returns something valid.
     pub current_input: Option<u16>,
+    /// The first DDC reads that failed, for the diagnostics row in Settings.
+    pub ddc_error: Option<String>,
 }
 
 /// Reads every DDC display and its advertised inputs.
@@ -29,23 +31,34 @@ pub fn scan() -> Vec<DisplayEntry> {
     for mut display in Display::enumerate() {
         // Read the control values before the input list: the capabilities string is fetched in
         // several chunks, and this LG stops answering VCP reads for a moment afterwards.
-        let brightness = display.read_vcp(VCP_BRIGHTNESS).ok().map(|v| (v.value, v.max));
-        let contrast = display.read_vcp(VCP_CONTRAST).ok().map(|v| (v.value, v.max));
-        let volume = display.read_vcp(VCP_VOLUME).ok().map(|v| (v.value, v.max));
-        let muted = display
-            .read_vcp(VCP_MUTE)
-            .ok()
-            .map(|v| match v.value {
-                1 => true,
-                2 => false,
-                _ => false,
-            });
+        let mut errors: Vec<String> = Vec::new();
+        let mut read = |code: u8, label: &str| match display.read_vcp(code) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                if errors.len() < 3 {
+                    errors.push(format!("{label}: {error}"));
+                }
+                None
+            }
+        };
+        let brightness = read(VCP_BRIGHTNESS, "brightness").map(|v| (v.value, v.max));
+        let contrast = read(VCP_CONTRAST, "contrast").map(|v| (v.value, v.max));
+        let volume = read(VCP_VOLUME, "volume").map(|v| (v.value, v.max));
+        let muted = read(VCP_MUTE, "mute").map(|v| match v.value {
+            1 => true,
+            2 => false,
+            _ => false,
+        });
         // Several LG firmwares answer 0 here regardless of the input; treat that as unknown.
-        let current_input = display
-            .read_vcp(VCP_INPUT_SOURCE)
-            .ok()
+        let current_input = read(VCP_INPUT_SOURCE, "input")
             .map(|v| v.value)
             .filter(|value| *value > 0);
+        // Only explain a completely blank control set; an unsupported volume control is normal.
+        let ddc_error = if brightness.is_none() && contrast.is_none() && volume.is_none() && !errors.is_empty() {
+            Some(errors.join("; "))
+        } else {
+            None
+        };
         let inputs = display.input_candidates();
 
         displays.push(DisplayEntry {
@@ -58,6 +71,7 @@ pub fn scan() -> Vec<DisplayEntry> {
             volume,
             muted,
             current_input,
+            ddc_error,
         });
     }
     displays
