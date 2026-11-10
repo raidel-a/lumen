@@ -148,8 +148,8 @@ pages and reads much higher.
 | state | footprint |
 | --- | --- |
 | launched, settings never opened | 13 MB |
-| settings open (source list and pages) | 34 MB |
-| settings closed again | 35 MB |
+| settings open (source list and pages) | 29 MB |
+| settings closed again | 30 MB |
 | idle CPU | 0% |
 
 The launch state is a status item and nothing else. Opening settings brings AppKit's window
