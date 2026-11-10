@@ -80,6 +80,9 @@ pub fn scan() -> Vec<DisplayEntry> {
         });
     }
     scan_builtin(&mut displays);
+    // The internal panel is always present; list it before external monitors in the menu and in
+    // the Settings source list.
+    displays.sort_by_key(|display| !display.builtin);
     displays
 }
 

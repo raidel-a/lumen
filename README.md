@@ -144,7 +144,8 @@ monitor and refresh, instead of just showing an empty controls group.
 ## Built-in display
 
 The internal panel has no DDC path, so Lumen lists it separately as **Built-in Display** (config key
-`builtin`) and drives its backlight through the private DisplayServices framework. It exposes
+`builtin`), ahead of external monitors in the menu and the Displays list, and drives its backlight
+through the private DisplayServices framework. It exposes
 brightness only: no contrast, volume, mute, input switching or release, and the Settings page omits
 the input editor. The menu entry keeps the same brightness slider and tick points as external
 displays.
