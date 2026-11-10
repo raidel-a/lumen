@@ -53,12 +53,12 @@ pub fn scan() -> Vec<DisplayEntry> {
         let current_input = read(VCP_INPUT_SOURCE, "input")
             .map(|v| v.value)
             .filter(|value| *value > 0);
-        // Only explain a completely blank control set; an unsupported volume control is normal.
-        let ddc_error = if brightness.is_none() && contrast.is_none() && volume.is_none() && !errors.is_empty() {
-            Some(errors.join("; "))
-        } else {
-            None
-        };
+        let ddc_error = ddc_diagnostic(
+            &errors,
+            brightness.is_some(),
+            contrast.is_some(),
+            volume.is_some(),
+        );
         let inputs = display.input_candidates();
 
         displays.push(DisplayEntry {
@@ -182,5 +182,44 @@ pub fn control_name(code: u8) -> &'static str {
         VCP_VOLUME => "Volume",
         VCP_MUTE => "Mute",
         _ => "Control",
+    }
+}
+
+/// Only explain a completely blank control set; an unsupported volume control is normal.
+fn ddc_diagnostic(
+    errors: &[String],
+    has_brightness: bool,
+    has_contrast: bool,
+    has_volume: bool,
+) -> Option<String> {
+    if errors.is_empty() || has_brightness || has_contrast || has_volume {
+        return None;
+    }
+    Some(errors.join("; "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ddc_diagnostic;
+
+    #[test]
+    fn explains_a_completely_blank_control_set() {
+        let errors = vec!["brightness: no reply".to_string()];
+        assert_eq!(
+            ddc_diagnostic(&errors, false, false, false),
+            Some("brightness: no reply".to_string())
+        );
+    }
+
+    #[test]
+    fn ignores_errors_when_one_control_works() {
+        let errors = vec!["volume: unsupported".to_string()];
+        assert_eq!(ddc_diagnostic(&errors, true, false, false), None);
+        assert_eq!(ddc_diagnostic(&errors, false, false, true), None);
+    }
+
+    #[test]
+    fn no_errors_means_no_diagnostic() {
+        assert_eq!(ddc_diagnostic(&[], false, false, false), None);
     }
 }

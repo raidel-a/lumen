@@ -44,6 +44,7 @@ you need isolation or a real bundle identity:
 ./scripts/dev/reset.sh               # clears the dev support dir
 ./scripts/dev/shot.sh --page virtual --screen agent --out /tmp/settings.png
 ./scripts/dev/smoke.sh               # pages, agent start/capture/stop, screen create/remove
+./scripts/check.sh --smoke           # tests, signed bundle, signature, smoke test
 ```
 
 - The dev app uses `~/Library/Application Support/Lumen Dev`, so it cannot overwrite the installed

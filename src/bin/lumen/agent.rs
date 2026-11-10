@@ -22,7 +22,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Chromium-family browsers, in the order they are tried when none is named.
@@ -35,6 +35,82 @@ pub const BROWSERS: &[&str] = &[
 ];
 
 pub const DEFAULT_PORT: u16 = 9222;
+
+/// Lifecycle of one agent, separate from the session record so a starting or failing browser is
+/// visible before it has a pid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Starting,
+    Running,
+    Stopping,
+    Failed,
+}
+
+static PHASES: Mutex<Option<HashMap<String, Phase>>> = Mutex::new(None);
+
+pub fn set_phase(name: &str, phase: Option<Phase>) {
+    let mut slot = match PHASES.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let phases = slot.get_or_insert_with(HashMap::new);
+    match phase {
+        Some(phase) => {
+            phases.insert(name.to_string(), phase);
+        }
+        None => {
+            phases.remove(name);
+        }
+    }
+}
+
+pub fn phase(name: &str) -> Option<Phase> {
+    let slot = match PHASES.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    slot.as_ref().and_then(|phases| phases.get(name).copied())
+}
+
+pub fn phases() -> Vec<(String, Phase)> {
+    let slot = match PHASES.lock() {
+        Ok(slot) => slot,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    slot.as_ref()
+        .map(|phases| phases.iter().map(|(name, phase)| (name.clone(), *phase)).collect())
+        .unwrap_or_default()
+}
+
+/// Marks a start as failed unless `finish` runs. The successful paths call `finish` after the
+/// session is registered.
+pub struct StartGuard {
+    name: String,
+    finished: bool,
+}
+
+impl StartGuard {
+    pub fn new(name: &str) -> Self {
+        set_phase(name, Some(Phase::Starting));
+        Self {
+            name: name.to_string(),
+            finished: false,
+        }
+    }
+
+    pub fn finish(mut self) {
+        set_phase(&self.name, Some(Phase::Running));
+        self.finished = true;
+    }
+}
+
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            set_phase(&self.name, Some(Phase::Failed));
+        }
+    }
+}
 
 /// The app that was in front before the browser was launched, so it can be put back.
 #[derive(Debug, Clone)]
@@ -488,11 +564,22 @@ fn terminate(pid: i32, browser: &str, profile: &Path) -> Result<bool, String> {
 /// Stops the session for a screen. Safe to call when there is none.
 pub fn stop(name: &str) -> Result<bool, String> {
     let Some(session) = session(name) else {
+        set_phase(name, None);
         return Ok(false);
     };
-    let terminated = terminate(session.pid, &session.browser, &session.profile)?;
-    SESSIONS.with(|sessions| sessions.borrow_mut().remove(name));
-    Ok(terminated)
+    set_phase(name, Some(Phase::Stopping));
+    let terminated = terminate(session.pid, &session.browser, &session.profile);
+    match terminated {
+        Ok(terminated) => {
+            SESSIONS.with(|sessions| sessions.borrow_mut().remove(name));
+            set_phase(name, None);
+            Ok(terminated)
+        }
+        Err(error) => {
+            set_phase(name, None);
+            Err(error)
+        }
+    }
 }
 
 /// Stops every tracked session, returning the names that were asked to quit.
@@ -500,10 +587,12 @@ pub fn stop_all() -> Vec<String> {
     let all = sessions();
     let mut stopped = Vec::new();
     for session in all {
+        set_phase(&session.name, Some(Phase::Stopping));
         if terminate(session.pid, &session.browser, &session.profile).unwrap_or(false) {
             stopped.push(session.name.clone());
         }
         SESSIONS.with(|sessions| sessions.borrow_mut().remove(&session.name));
+        set_phase(&session.name, None);
     }
     stopped
 }
