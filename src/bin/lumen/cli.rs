@@ -110,6 +110,7 @@ fn virtual_command(args: &[String]) -> Value {
             };
             send(json!({ "cmd": "virtual.remove", "name": name }))
         }
+        "previews" => send(json!({ "cmd": "virtual.previews" })),
         "preview" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
@@ -227,6 +228,7 @@ lumen virtual ensure --name <name> [--width N] [--height N] [--hidpi] [--refresh
 lumen virtual bounds --name <name>
 lumen virtual screenshot --name <name> [--out path.png]
 lumen virtual preview --name <name> [--hide]
+lumen virtual previews
 lumen virtual rename --name <name> --to <new-name>
 lumen virtual reboot --name <name>
 lumen virtual remove --name <name>

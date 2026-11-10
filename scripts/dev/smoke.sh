@@ -50,6 +50,18 @@ LUMEN_SUPPORT_DIR="$support" "$cli" agent screenshot --name "$name" --out "$capt
 [[ -s "$capture" ]] || fail "agent screenshot is empty"
 echo "smoke: agent capture $(stat -f%z "$capture") bytes"
 
+LUMEN_SUPPORT_DIR="$support" "$cli" virtual preview --name "$name" >/dev/null \
+  || fail "preview did not open"
+previews="$(LUMEN_SUPPORT_DIR="$support" "$cli" virtual previews)"
+echo "$previews" | grep -q "\"$name\"" || fail "preview is not listed"
+LUMEN_SUPPORT_DIR="$support" "$cli" virtual preview --name "$name" --hide >/dev/null \
+  || fail "preview did not close"
+previews="$(LUMEN_SUPPORT_DIR="$support" "$cli" virtual previews)"
+if echo "$previews" | grep -q "\"$name\""; then
+  fail "preview is still listed"
+fi
+echo "smoke: preview open and close"
+
 LUMEN_SUPPORT_DIR="$support" "$cli" agent stop --name "$name" >/dev/null || fail "agent did not stop"
 LUMEN_SUPPORT_DIR="$support" "$cli" virtual remove --name "$name" >/dev/null || fail "screen did not remove"
 echo "smoke: ok"

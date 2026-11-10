@@ -146,22 +146,24 @@ fn handle(line: &str) -> String {
             Ok(screens) => ok_value(json!({ "screens": screens_json(&screens) })),
             Err(message) => error(message),
         },
+        "virtual.previews" => match on_main_value(|| crate::preview::open_names()) {
+            Ok(names) => ok_value(json!({ "open": names })),
+            Err(message) => error(message),
+        },
         "virtual.preview" => {
             let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
                 return error("missing name");
             };
             let show = request.get("show").and_then(Value::as_bool).unwrap_or(true);
-            match on_main_value(move || {
-                if !show {
-                    crate::screens::stop_preview();
-                    return Ok(());
+            match on_main_value(move || -> Result<Vec<String>, String> {
+                if show {
+                    crate::preview::open(&name)?;
+                } else {
+                    crate::preview::close(&name);
                 }
-                match crate::ui::target() {
-                    Some(target) => crate::screens::start_preview(&name, &target),
-                    None => Err("the app is not ready for a preview".to_string()),
-                }
+                Ok(crate::preview::open_names())
             }) {
-                Ok(Ok(())) => ok_value(json!({ "preview": show })),
+                Ok(Ok(open)) => ok_value(json!({ "preview": show, "open": open })),
                 Ok(Err(message)) => error(message),
                 Err(message) => error(message),
             }
