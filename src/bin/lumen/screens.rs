@@ -322,6 +322,19 @@ pub fn info(name: &str) -> Option<ScreenInfo> {
     })
 }
 
+/// Drops and recreates a screen, which is what a display change looks like to the browser.
+pub fn reboot(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
+    remove(&config.name);
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(900) {
+        unsafe {
+            NSRunLoop::currentRunLoop()
+                .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+        }
+    }
+    ensure(config)
+}
+
 /// Drops the screen. The display disappears a moment later.
 pub fn remove(name: &str) -> bool {
     SCREENS.with(|screens| {
