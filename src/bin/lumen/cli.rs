@@ -73,6 +73,15 @@ fn virtual_command(args: &[String]) -> Value {
             };
             send(json!({ "cmd": "virtual.bounds", "name": name }))
         }
+        "rename" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            let Some(to) = option(args, "--to") else {
+                return json!({ "ok": false, "error": "--to is required" });
+            };
+            send(json!({ "cmd": "virtual.rename", "name": name, "to": to }))
+        }
         "reboot" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
@@ -128,6 +137,9 @@ fn agent_command(args: &[String]) -> Value {
             }
             if flag(args, "--headless") {
                 request["headless"] = json!(true);
+            }
+            if flag(args, "--windowed") {
+                request["headless"] = json!(false);
             }
             send(request)
         }
@@ -199,9 +211,10 @@ lumen virtual ensure --name <name> [--width N] [--height N] [--hidpi] [--refresh
 lumen virtual bounds --name <name>
 lumen virtual screenshot --name <name> [--out path.png]
 lumen virtual preview --name <name> [--hide]
+lumen virtual rename --name <name> --to <new-name>
 lumen virtual reboot --name <name>
 lumen virtual remove --name <name>
-lumen agent start --name <screen> [--url URL] [--headless] [--port N] [--browser bundle-id|path.app]
+lumen agent start --name <screen> [--url URL] [--headless|--windowed] [--port N] [--browser bundle-id|path.app]
 lumen agent screenshot --name <screen> [--out page.png]
 lumen agent move --name <screen> [--left X] [--top Y] [--width W] [--height H]
 lumen agent stop --name <screen>
