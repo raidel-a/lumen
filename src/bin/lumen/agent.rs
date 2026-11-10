@@ -61,6 +61,7 @@ pub struct Session {
     pub profile: PathBuf,
     pub url: Option<String>,
     pub started: u64,
+    pub headless: bool,
 }
 
 thread_local! {
@@ -137,6 +138,61 @@ fn bundle_id_for(identity: &str) -> Option<String> {
     Some(identity.to_string())
 }
 
+/// Every process carrying this screen's browser profile. Chrome keeps helpers in the same
+/// profile, so this is how an orphan is found after a crash or a forwarded launch.
+pub fn profile_pids(name: &str) -> Vec<i32> {
+    let marker = format!("--user-data-dir={}", profile_dir(name).display());
+    let Ok(output) = Command::new("/bin/ps").args(["-axo", "pid=,command="]).output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, command) = line.split_once(' ')?;
+            if command.contains(&marker) {
+                pid.parse().ok()
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Stops every process carrying this screen's profile, after checking the command line again.
+/// Only SIGTERM is used; nothing is force-killed.
+pub fn stop_profile(name: &str) -> usize {
+    let marker = format!("--user-data-dir={}", profile_dir(name).display());
+    let mut stopped = 0;
+    for pid in profile_pids(name) {
+        let Ok(output) = Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+        else {
+            continue;
+        };
+        if !String::from_utf8_lossy(&output.stdout).contains(&marker) {
+            continue;
+        }
+        unsafe {
+            libc::kill(pid, libc::SIGTERM);
+        }
+        stopped += 1;
+    }
+    stopped
+}
+
+pub fn pid_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "pid="])
+        .output()
+        .map(|output| !output.stdout.is_empty())
+        .unwrap_or(false)
+}
+
 pub fn profile_dir(name: &str) -> PathBuf {
     Config::support_dir()
         .join("agents")
@@ -151,6 +207,7 @@ pub fn launch(
     url: Option<&str>,
     port: u16,
     browser: Option<&str>,
+    headless: bool,
 ) -> Result<Launch, String> {
     let bundle = match browser {
         Some(bundle) => bundle.to_string(),
@@ -181,13 +238,19 @@ pub fn launch(
     let mut args: Vec<String> = vec![
         format!("--user-data-dir={}", profile.display()),
         format!("--remote-debugging-port={port}"),
-        format!("--window-position={x},{y}"),
-        format!("--window-size={width},{height}"),
         "--no-first-run".to_string(),
         "--no-default-browser-check".to_string(),
         "--disable-session-crashed-bubble".to_string(),
         "--hide-crash-restore-bubble".to_string(),
     ];
+    if headless {
+        // New headless still serves CDP and never creates a window, so it cannot steal focus.
+        args.push("--headless=new".to_string());
+        args.push(format!("--window-size={width},{height}"));
+    } else {
+        args.push(format!("--window-position={x},{y}"));
+        args.push(format!("--window-size={width},{height}"));
+    }
     if let Some(url) = url {
         args.push(url.to_string());
     }
@@ -386,6 +449,7 @@ pub fn session_record(session: &Session) -> AgentSessionRecord {
         browser: session.browser.clone(),
         profile: session.profile.display().to_string(),
         url: session.url.clone(),
+        headless: session.headless,
     }
 }
 
@@ -484,11 +548,18 @@ pub fn session_json(session: &Session, endpoint: Option<Value>) -> Value {
         "profile": session.profile.display().to_string(),
         "url": session.url,
         "started": session.started,
+        "headless": session.headless,
         "endpoint": endpoint,
     })
 }
 
-pub fn new_session(name: &str, launch: &Launch, pid: i32, url: Option<String>) -> Session {
+pub fn new_session(
+    name: &str,
+    launch: &Launch,
+    pid: i32,
+    url: Option<String>,
+    headless: bool,
+) -> Session {
     Session {
         name: name.to_string(),
         pid,
@@ -497,5 +568,6 @@ pub fn new_session(name: &str, launch: &Launch, pid: i32, url: Option<String>) -
         profile: launch.profile.clone(),
         url,
         started: now_seconds(),
+        headless,
     }
 }

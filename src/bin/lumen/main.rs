@@ -144,7 +144,7 @@ fn spawn_scan() {
             // A display that comes back after wake can leave the agent window on another
             // screen. Move it home once the arrangement has settled.
             for session in agent::sessions() {
-                if !agent::session_alive(&session) {
+                if session.headless || !agent::session_alive(&session) {
                     continue;
                 }
                 let Some(info) = screens::info(&session.name) else {

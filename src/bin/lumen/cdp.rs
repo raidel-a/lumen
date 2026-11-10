@@ -113,12 +113,7 @@ fn http_json(port: u16, path: &str) -> Result<Value, String> {
     serde_json::from_slice(&body).map_err(|error| format!("cdp {path}: {error}"))
 }
 
-fn ws_path(port: u16) -> Result<String, String> {
-    let version = http_json(port, "/json/version")?;
-    let url = version
-        .get("webSocketDebuggerUrl")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "cdp: no websocket url".to_string())?;
+fn ws_path_from_url(url: &str) -> Result<String, String> {
     let rest = url
         .split_once("://")
         .map(|(_, rest)| rest)
@@ -127,6 +122,63 @@ fn ws_path(port: u16) -> Result<String, String> {
         .find('/')
         .ok_or_else(|| "cdp: bad websocket url".to_string())?;
     Ok(rest[slash..].to_string())
+}
+
+fn ws_path(port: u16) -> Result<String, String> {
+    let version = http_json(port, "/json/version")?;
+    let url = version
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cdp: no websocket url".to_string())?;
+    ws_path_from_url(url)
+}
+
+/// The page target's own endpoint, needed for the Page domain.
+fn page_ws_path(port: u16) -> Result<String, String> {
+    let list = http_json(port, "/json/list")?;
+    let url = list
+        .as_array()
+        .and_then(|targets| {
+            targets
+                .iter()
+                .find(|target| target.get("type").and_then(Value::as_str) == Some("page"))
+        })
+        .and_then(|target| target.get("webSocketDebuggerUrl"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cdp: no page endpoint".to_string())?;
+    ws_path_from_url(url)
+}
+
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buffer = 0u32;
+    let mut bits = 0u32;
+    for byte in input.bytes() {
+        if byte == b'=' {
+            break;
+        }
+        let Some(part) = value(byte) else {
+            continue;
+        };
+        buffer = (buffer << 6) | u32::from(part);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Ok(out)
 }
 
 fn page_target(port: u16) -> Result<String, String> {
@@ -300,6 +352,30 @@ pub fn window(port: u16) -> Result<Window, String> {
         json!({ "targetId": target }),
     )?;
     Ok(parse_window(&result))
+}
+
+/// Captures the page as a PNG, over CDP, with no screen recording permission involved.
+pub fn screenshot(port: u16, path: &std::path::Path) -> Result<(), String> {
+    let ws = page_ws_path(port)?;
+    let mut stream = ws_connect(port, &ws)?;
+    // Page.enable first; some builds refuse captureScreenshot otherwise.
+    let _ = command(&mut stream, 1, "Page.enable", json!({}))?;
+    let result = command(
+        &mut stream,
+        2,
+        "Page.captureScreenshot",
+        json!({ "format": "png", "captureBeyondViewport": false }),
+    )?;
+    let data = result
+        .get("data")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "cdp: screenshot had no data".to_string())?;
+    let bytes = base64_decode(data)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    std::fs::write(path, bytes).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Sets explicit browser window bounds.

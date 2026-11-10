@@ -126,6 +126,9 @@ fn agent_command(args: &[String]) -> Value {
             if let Some(browser) = option(args, "--browser") {
                 request["browser"] = json!(browser);
             }
+            if flag(args, "--headless") {
+                request["headless"] = json!(true);
+            }
             send(request)
         }
         "stop" => {
@@ -133,6 +136,16 @@ fn agent_command(args: &[String]) -> Value {
                 return json!({ "ok": false, "error": "--name is required" });
             };
             send(json!({ "cmd": "agent.stop", "name": name }))
+        }
+        "screenshot" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            let mut request = json!({ "cmd": "agent.screenshot", "name": name });
+            if let Some(path) = option(args, "--out") {
+                request["path"] = json!(path);
+            }
+            send(request)
         }
         "move" => {
             let Some(name) = option(args, "--name") else {
@@ -188,7 +201,9 @@ lumen virtual screenshot --name <name> [--out path.png]
 lumen virtual preview --name <name> [--hide]
 lumen virtual reboot --name <name>
 lumen virtual remove --name <name>
-lumen agent start --name <screen> [--url URL] [--port N] [--browser bundle-id|path.app]
+lumen agent start --name <screen> [--url URL] [--headless] [--port N] [--browser bundle-id|path.app]
+lumen agent screenshot --name <screen> [--out page.png]
+lumen agent move --name <screen> [--left X] [--top Y] [--width W] [--height H]
 lumen agent stop --name <screen>
 lumen agent status --name <screen>"
     );

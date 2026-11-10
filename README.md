@@ -161,6 +161,8 @@ lumen agent chrome --name Agent --url https://example.com
 ```
 
 ```sh
+lumen agent start --name Agent --headless --url https://example.com
+lumen agent screenshot --name Agent --out page.png
 lumen agent status --name Agent              # session, window bounds, whether it is on screen
 lumen agent move --name Agent --left 100 --top 100
 lumen agent stop --name Agent
@@ -171,6 +173,11 @@ Chromium-family browser with a dedicated profile and remote debugging, positione
 screen. The agent then connects with Playwright's `chromium.connectOverCDP(endpoint)`. No
 synthetic input is used, so the cursor never moves. Starting again reuses a live session instead
 of launching a second browser.
+
+`--headless` uses Chromium's `--headless=new`: CDP works, no window is created, and the app is
+never activated, so the focus flash disappears entirely. Nothing is visible on the virtual screen
+in that mode, so use `agent screenshot` to see it. `agent screenshot` captures the page over CDP,
+with no Screen Recording permission, in either mode.
 
 Sessions are tracked by pid and mirrored to `config.json`. `agent stop`, `virtual remove` and
 quitting Lumen close the browser after checking that the pid still runs the recorded profile, so a
@@ -192,7 +199,7 @@ What the launch guarantees, and what it does not:
 | No DDC, no input switching | virtual screens have no DDC path |
 
 Chromium activates itself when it creates its first window, and neither `activates = false` nor
-`open -g` changes that, so there is a brief focus flash. Lumen puts the previous app back only if
+`open -g` changes that, so a windowed session has a brief focus flash. Headless sessions do not. Lumen puts the previous app back only if
 the browser is still frontmost, so if you switched elsewhere during the launch it leaves you
 alone. Clipboard and native browser dialogs remain global: drive pages through CDP, and pre-grant
 permissions in the profile rather than clicking dialogs.
