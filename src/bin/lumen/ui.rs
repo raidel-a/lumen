@@ -35,6 +35,7 @@ thread_local! {
 pub enum Page {
     General,
     Displays,
+    Screens,
 }
 
 pub struct Ui {
@@ -48,6 +49,11 @@ pub struct Ui {
     pub brightness_value: Option<Retained<NSTextField>>,
     pub contrast_value: Option<Retained<NSTextField>>,
     pub volume_value: Option<Retained<NSTextField>>,
+    pub screen_widths: Vec<Retained<NSTextField>>,
+    pub screen_heights: Vec<Retained<NSTextField>>,
+    pub screen_refreshes: Vec<Retained<NSTextField>>,
+    pub screen_hidpi: Vec<Retained<NSButton>>,
+    pub screen_auto: Vec<Retained<NSButton>>,
 }
 
 impl Default for Ui {
@@ -63,6 +69,11 @@ impl Default for Ui {
             brightness_value: None,
             contrast_value: None,
             volume_value: None,
+            screen_widths: Vec::new(),
+            screen_heights: Vec::new(),
+            screen_refreshes: Vec::new(),
+            screen_hidpi: Vec::new(),
+            screen_auto: Vec::new(),
         }
     }
 }
@@ -189,6 +200,32 @@ fn switch(on: bool, parent: &NSView, rect: NSRect, action: objc2::runtime::Sel) 
         wire(&s, action);
         parent.addSubview(&s);
         s
+    }
+}
+
+/// An editable numeric field for the screen editor.
+fn number_field(value: &str, parent: &NSView, rect: NSRect, tag_value: isize) -> Retained<NSTextField> {
+    unsafe {
+        let field = NSTextField::initWithFrame(mtm().alloc(), rect);
+        field.setStringValue(&NSString::from_str(value));
+        field.setFont(Some(&NSFont::systemFontOfSize_weight(12.0, NSFontWeightRegular)));
+        field.setBezeled(true);
+        field.setEditable(true);
+        field.setSelectable(true);
+        field.setTag(tag_value);
+        parent.addSubview(&field);
+        field
+    }
+}
+
+/// A checkbox with a visible title that only stores state; Apply reads it.
+fn option_box(title: &str, on: bool, parent: &NSView, rect: NSRect) -> Retained<NSButton> {
+    unsafe {
+        let b = NSButton::checkboxWithTitle_target_action(&NSString::from_str(title), None, None, mtm());
+        b.setFrame(rect);
+        b.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
+        parent.addSubview(&b);
+        b
     }
 }
 
@@ -560,6 +597,161 @@ fn clear(view: &NSView) {
     }
 }
 
+fn build_screens(parent: &NSView, model: &Model, theme: &Theme) {
+    let screens = crate::screens::list();
+    UI.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        ui.screen_widths.clear();
+        ui.screen_heights.clear();
+        ui.screen_refreshes.clear();
+        ui.screen_hidpi.clear();
+        ui.screen_auto.clear();
+    });
+
+    unsafe {
+        parent.addSubview(&label(
+            "VIRTUAL SCREENS",
+            11.0,
+            NSFontWeightSemibold,
+            &theme.secondary,
+            frame(PAD, 64.0, 200.0, 14.0),
+        ));
+        parent.addSubview(&paragraph(
+            "Displays that exist only in memory. Use one as an agent workspace, a preview or a capture source.",
+            11.0,
+            &theme.secondary,
+            frame(PAD, 84.0, WIDTH - PAD * 2.0, 16.0),
+        ));
+
+        let mut y = 112.0;
+        if screens.is_empty() {
+            let rect = frame(PAD, y, WIDTH - PAD * 2.0, 64.0);
+            let _ = card(
+                theme,
+                parent,
+                rect,
+                "No virtual screens",
+                "Create one below, or with lumen virtual ensure --name Agent.",
+            );
+            y += 72.0;
+        }
+
+        for (index, screen) in screens.iter().enumerate() {
+            let config = model.config.virtual_screen(&screen.name).cloned();
+            let refresh = config.as_ref().map(|config| config.refresh).unwrap_or(60.0);
+            let hidpi = config.as_ref().map(|config| config.hidpi).unwrap_or(false);
+            let auto = config.as_ref().map(|config| config.auto_create).unwrap_or(true);
+            let rect = frame(PAD, y, WIDTH - PAD * 2.0, 116.0);
+            let _ = card(
+                theme,
+                parent,
+                rect,
+                &screen.name,
+                &format!(
+                    "{}x{} at {},{}  ·  {}x  ·  {} Hz",
+                    screen.width, screen.height, screen.x, screen.y, screen.scale, refresh
+                ),
+            );
+
+            let field_y = y + 44.0;
+            let mut x = PAD + 16.0;
+            parent.addSubview(&label(
+                "W",
+                11.0,
+                NSFontWeightRegular,
+                &theme.secondary,
+                frame(x, field_y + 3.0, 14.0, 16.0),
+            ));
+            x += 16.0;
+            let width = number_field(
+                &screen.width.to_string(),
+                parent,
+                frame(x, field_y, 58.0, 22.0),
+                (index * 10 + 1) as isize,
+            );
+            x += 62.0;
+            parent.addSubview(&label(
+                "H",
+                11.0,
+                NSFontWeightRegular,
+                &theme.secondary,
+                frame(x, field_y + 3.0, 14.0, 16.0),
+            ));
+            x += 16.0;
+            let height = number_field(
+                &screen.height.to_string(),
+                parent,
+                frame(x, field_y, 58.0, 22.0),
+                (index * 10 + 2) as isize,
+            );
+            x += 62.0;
+            parent.addSubview(&label(
+                "Hz",
+                11.0,
+                NSFontWeightRegular,
+                &theme.secondary,
+                frame(x, field_y + 2.0, 24.0, 16.0),
+            ));
+            x += 24.0;
+            let hz = number_field(
+                &format!("{refresh:.0}"),
+                parent,
+                frame(x, field_y, 44.0, 22.0),
+                (index * 10 + 3) as isize,
+            );
+            x += 50.0;
+            let hidpi_box = option_box("2x", hidpi, parent, frame(x, field_y, 46.0, 22.0));
+            x += 50.0;
+            let auto_box = option_box("Auto", auto, parent, frame(x, field_y, 62.0, 22.0));
+            x += 66.0;
+            let apply = button(
+                "Apply",
+                parent,
+                frame(x, field_y - 1.0, 60.0, 24.0),
+                true,
+                sel!(screenApply:),
+            );
+            tag(&apply, index as isize);
+
+            let shown = crate::screens::preview_name().as_deref() == Some(screen.name.as_str());
+            let preview = button(
+                if shown { "Hide" } else { "Preview" },
+                parent,
+                frame(WIDTH - PAD - 16.0 - 148.0, field_y - 1.0, 70.0, 24.0),
+                true,
+                sel!(screenPreview:),
+            );
+            tag(&preview, index as isize);
+            let remove = button(
+                "Remove",
+                parent,
+                frame(WIDTH - PAD - 16.0 - 70.0, field_y - 1.0, 70.0, 24.0),
+                true,
+                sel!(screenRemove:),
+            );
+            tag(&remove, index as isize);
+
+            UI.with(|ui| {
+                let mut ui = ui.borrow_mut();
+                ui.screen_widths.push(width);
+                ui.screen_heights.push(height);
+                ui.screen_refreshes.push(hz);
+                ui.screen_hidpi.push(hidpi_box);
+                ui.screen_auto.push(auto_box);
+            });
+            y += 124.0;
+        }
+
+        let _ = button(
+            "New screen",
+            parent,
+            frame(PAD, y, 110.0, 28.0),
+            true,
+            sel!(newScreen:),
+        );
+    }
+}
+
 fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) {
     let theme = Theme::new();
 
@@ -580,6 +772,10 @@ fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) 
                 .map(|config| config.inputs.len())
                 .unwrap_or(0);
             (162.0 + controls as f64 * 32.0 + inputs as f64 * 40.0 + 86.0).clamp(520.0, 900.0)
+        }
+        Page::Screens => {
+            let count = crate::screens::list().len().max(1);
+            (112.0 + count as f64 * 124.0 + 60.0).clamp(540.0, 900.0)
         }
     };
     let previous = CONTENT_HEIGHT.with(|cell| cell.get());
@@ -616,6 +812,7 @@ fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) 
         let labels = NSArray::from_id_slice(&[
             NSString::from_str("General"),
             NSString::from_str("Displays"),
+            NSString::from_str("Screens"),
         ]);
         let tabs = NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
             &labels,
@@ -624,14 +821,19 @@ fn build_content(window: &NSWindow, model: &Model, page: Page, selected: usize) 
             None,
             mtm(),
         );
-        tabs.setFrame(frame(WIDTH - PAD - 156.0, 12.0, 156.0, 26.0));
-        tabs.setSelectedSegment(if page == Page::General { 0 } else { 1 });
+        tabs.setFrame(frame(WIDTH - PAD - 230.0, 12.0, 230.0, 26.0));
+        tabs.setSelectedSegment(match page {
+            Page::General => 0,
+            Page::Displays => 1,
+            Page::Screens => 2,
+        });
         wire(&tabs, sel!(pageChanged:));
         content.addSubview(&tabs);
 
         match page {
             Page::General => build_general(&content, model, &theme),
             Page::Displays => build_displays(&content, model, &theme, selected),
+            Page::Screens => build_screens(&content, model, &theme),
         }
     }
 }
@@ -796,6 +998,94 @@ declare_class!(
             crate::queue_control(display_id, code, value);
         }
 
+        #[method(screenApply:)]
+        fn screen_apply(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender) as usize;
+            let Some(screen) = crate::screens::list().get(index).cloned() else {
+                return;
+            };
+            let Some(mut config) = crate::with_model(|model| model.config.virtual_screen(&screen.name).cloned()) else {
+                return;
+            };
+            let (width, height, refresh, hidpi, auto) = UI.with(|ui| {
+                let ui = ui.borrow();
+                let number = |field: Option<&Retained<NSTextField>>, fallback: f64| {
+                    field
+                        .map(|field| unsafe { field.stringValue().to_string() })
+                        .and_then(|text| text.trim().parse::<f64>().ok())
+                        .unwrap_or(fallback)
+                };
+                let state = |box_: Option<&Retained<NSButton>>, fallback: bool| {
+                    box_
+                        .map(|box_| unsafe { box_.state() } == NSControlStateValueOn)
+                        .unwrap_or(fallback)
+                };
+                (
+                    number(ui.screen_widths.get(index), screen.width as f64),
+                    number(ui.screen_heights.get(index), screen.height as f64),
+                    number(ui.screen_refreshes.get(index), config.refresh),
+                    state(ui.screen_hidpi.get(index), config.hidpi),
+                    state(ui.screen_auto.get(index), config.auto_create),
+                )
+            });
+            config.width = (width.round() as i64).clamp(640, 7680) as u32;
+            config.height = (height.round() as i64).clamp(480, 4320) as u32;
+            config.refresh = refresh.clamp(1.0, 240.0);
+            config.hidpi = hidpi;
+            config.auto_create = auto;
+            match crate::screens::ensure(&config) {
+                Ok(_) => {
+                    crate::with_model(|model| {
+                        model.config.upsert_virtual_screen(config);
+                        model.message = Some("Virtual screen updated".to_string());
+                    });
+                }
+                Err(error) => {
+                    crate::with_model(|model| model.message = Some(error));
+                }
+            }
+            crate::after_change();
+        }
+
+        #[method(screenPreview:)]
+        fn screen_preview(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender) as usize;
+            let Some(screen) = crate::screens::list().get(index).cloned() else {
+                return;
+            };
+            if crate::screens::preview_name().as_deref() == Some(screen.name.as_str()) {
+                crate::screens::stop_preview();
+            } else if let Err(error) = crate::screens::start_preview(&screen.name, self) {
+                crate::with_model(|model| model.message = Some(error));
+            }
+            crate::after_change();
+        }
+
+        #[method(screenRemove:)]
+        fn screen_remove(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender) as usize;
+            let Some(screen) = crate::screens::list().get(index).cloned() else {
+                return;
+            };
+            crate::remove_screen(&screen.name);
+        }
+
+        #[method(newScreen:)]
+        fn new_screen(&self, _sender: *mut AnyObject) {
+            let existing: Vec<String> = crate::screens::list().iter().map(|screen| screen.name.clone()).collect();
+            let mut counter = 2;
+            let name = loop {
+                let candidate = format!("Screen {counter}");
+                if !existing.contains(&candidate) {
+                    break candidate;
+                }
+                counter += 1;
+            };
+            if let Err(error) = crate::create_screen(&name, 1920, 1080, false) {
+                crate::with_model(|model| model.message = Some(error));
+            }
+        }
+
         #[method(testInput:)]
         fn test_input(&self, sender: *mut AnyObject) {
             let index = sender_tag(sender).max(0) as usize;
@@ -899,7 +1189,13 @@ declare_class!(
         #[method(pageChanged:)]
         fn page_changed(&self, sender: *mut AnyObject) {
             let segment: isize = unsafe { msg_send![sender, selectedSegment] };
-            UI.with(|ui| ui.borrow_mut().page = if segment == 1 { Page::Displays } else { Page::General });
+            UI.with(|ui| {
+                ui.borrow_mut().page = match segment {
+                    1 => Page::Displays,
+                    2 => Page::Screens,
+                    _ => Page::General,
+                }
+            });
             crate::after_change();
         }
 

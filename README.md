@@ -140,13 +140,19 @@ lumen virtual ensure --name Agent            # create, prints display id and bou
 lumen virtual list                           # all live virtual screens
 lumen virtual bounds --name Agent            # geometry after any rearrangement
 lumen virtual screenshot --name Agent --out frame.png
+lumen virtual preview --name Agent            # floating live window, --hide to close
+lumen virtual reboot --name Agent             # drop and recreate, for testing recovery
 lumen virtual remove --name Agent
 ```
 
 Screens are persisted in `config.json` with `auto_create`, so they are recreated after launch and
 after wake. The default is 1920x1080 at 1x, placed to the right of the main display; the origin is
 read back from `CGDisplayBounds`, never pinned (pinning keeps the display registered until the
-process exits and breaks removal).
+process exits and breaks removal). At most four virtual screens can exist, sizes are limited to
+640x480 through 7680x4320, and screenshots are pruned to the newest 20 per screen.
+
+Settings has a Screens tab: geometry, 1x/2x, refresh, auto-create, preview, apply and remove. Each
+screen's menu entry also has preview and remove actions.
 
 ### Handing a screen to an agent
 
@@ -154,10 +160,23 @@ process exits and breaks removal).
 lumen agent chrome --name Agent --url https://example.com
 ```
 
-Returns the CDP endpoint, port, profile and screen geometry. Lumen launches a Chromium-family
-browser with a dedicated profile and remote debugging, positioned on the virtual screen. The
-agent then connects with Playwright's `chromium.connectOverCDP(endpoint)`. No synthetic input is
-used, so the cursor never moves.
+```sh
+lumen agent status --name Agent              # session, window bounds, whether it is on screen
+lumen agent move --name Agent --left 100 --top 100
+lumen agent stop --name Agent
+```
+
+`agent start` returns the CDP endpoint, port, profile and screen geometry. Lumen launches a
+Chromium-family browser with a dedicated profile and remote debugging, positioned on the virtual
+screen. The agent then connects with Playwright's `chromium.connectOverCDP(endpoint)`. No
+synthetic input is used, so the cursor never moves. Starting again reuses a live session instead
+of launching a second browser.
+
+Sessions are tracked by pid and mirrored to `config.json`. `agent stop`, `virtual remove` and
+quitting Lumen close the browser after checking that the pid still runs the recorded profile, so a
+pid cannot be reused into killing something else. A record left by a crash is closed on the next
+launch. When a display change moves the window, Lumen re-homes it with CDP `Browser.setWindowBounds`
+and `agent status` reports whether the window is still on its screen.
 
 Browser detection tries installed Chromium browsers (Chrome, Chromium, Brave, Edge) and then the
 Chrome for Testing build in the Playwright cache. `--browser <bundle-id|path.app>` selects one
@@ -190,6 +209,9 @@ permissions in the profile rather than clicking dialogs.
 - The settings window is fixed-size; dynamic resizing would need Auto Layout constraints.
 - `CGVirtualDisplay` is private API. It works on macOS 27.3 (measured) and has shipped in other
   apps for years, but an OS update can break it, and the App Store does not accept it.
+- Recreating a display with the same identity immediately after removal can return nil from
+  `initWithDescriptor:`; Lumen waits for the old display to leave the active list first, and puts
+  the previous screen back if creation still fails.
 - Removing a virtual screen releases only the display object. Releasing the descriptor first
   crashes in `-[CGVirtualDisplay dealloc]`, so the descriptor, settings and mode array are left to
   the process exit: three small objects per removed screen.

@@ -283,17 +283,7 @@ fn ensure(request: &Value, name: String) -> String {
 
 fn remove(name: &str) -> String {
     let name = name.to_string();
-    let reply = on_main_value(move || {
-        // Close the browser first, so its window cannot survive the display on another screen.
-        let stopped = crate::agent::stop(&name).unwrap_or(false);
-        let removed = crate::screens::remove(&name);
-        crate::with_model(|model| {
-            model.config.remove_virtual_screen(&name);
-            model.config.forget_agent_session(&name);
-        });
-        crate::after_change();
-        (removed, stopped)
-    });
+    let reply = on_main_value(move || crate::remove_screen(&name));
     match reply {
         Ok((removed, stopped)) if removed => {
             ok_value(json!({ "removed": true, "agent_stopped": stopped }))

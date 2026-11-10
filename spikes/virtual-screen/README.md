@@ -94,6 +94,9 @@ All numbers are from this machine, not estimates.
   afterwards.
 - **Teardown order matters.** Releasing the descriptor, settings or mode array before the display
   crashes in `-[CGVirtualDisplay dealloc]`. Release only the display and leave the helpers alive.
+- **Recreation is not instant.** `initWithDescriptor:` returns nil if a display with the same
+  identity is still registered, so a resize has to wait for the old display to leave the active
+  list before creating the new one.
 - **The run loop must be pumped while the mode is applied.** Sleeping on the main thread after
   `applySettings:` leaves the display at 0x0 forever; `NSRunLoop::runUntilDate` lets the mode
   arrive, typically within 200 ms.

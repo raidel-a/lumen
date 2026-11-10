@@ -143,6 +143,13 @@ fn create(config: &VirtualScreenConfig) -> Result<Screen, String> {
 
         let alloc: *mut AnyObject = msg_send![class("CGVirtualDisplay"), alloc];
         let display: *mut AnyObject = msg_send![alloc, initWithDescriptor: descriptor];
+        if display.is_null() {
+            let _: () = msg_send![descriptor, release];
+            return Err(
+                "the display system refused a new virtual screen; an old one may still be closing"
+                    .to_string(),
+            );
+        }
 
         let modes: *mut AnyObject = msg_send![class("NSMutableArray"), array];
         for (w, h) in mode_list(width, height) {
@@ -261,24 +268,44 @@ pub fn ensure(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
     if config.name.trim().is_empty() {
         return Err("a virtual screen needs a name".to_string());
     }
-    let recreate = SCREENS.with(|screens| {
+    let existing = SCREENS.with(|screens| {
         screens
             .borrow()
             .iter()
-            .position(|screen| screen.info.name == config.name)
-            .map(|index| !screens.borrow()[index].matches(config))
+            .find(|screen| screen.info.name == config.name)
+            .map(|screen| (screen.info.id, screen.config.clone(), screen.matches(config)))
     });
-    match recreate {
-        Some(true) => {
+    let mut previous = None;
+    match existing {
+        Some((id, old_config, false)) => {
+            // Recreating needs the old display to be gone; the Window Server refuses a second
+            // display with the same identity, and `initWithDescriptor:` returns nil while it
+            // still exists.
             remove(&config.name);
+            wait_until_gone(id);
+            previous = Some(old_config);
         }
-        Some(false) => return info(&config.name).ok_or_else(|| "screen vanished".to_string()),
+        Some((_, _, true)) => {
+            return info(&config.name).ok_or_else(|| "screen vanished".to_string())
+        }
         None => {}
     }
-    let screen = create(config)?;
-    let info = screen.info.clone();
-    SCREENS.with(|screens| screens.borrow_mut().push(screen));
-    Ok(info)
+    match create(config) {
+        Ok(screen) => {
+            let info = screen.info.clone();
+            SCREENS.with(|screens| screens.borrow_mut().push(screen));
+            Ok(info)
+        }
+        Err(error) => {
+            // Put the old screen back rather than leaving the user with nothing.
+            if let Some(old_config) = previous {
+                if let Ok(screen) = create(&old_config) {
+                    SCREENS.with(|screens| screens.borrow_mut().push(screen));
+                }
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Recreates every auto-create screen after launch, wake or a display change.
@@ -322,15 +349,23 @@ pub fn info(name: &str) -> Option<ScreenInfo> {
     })
 }
 
-/// Drops and recreates a screen, which is what a display change looks like to the browser.
-pub fn reboot(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
-    remove(&config.name);
+/// Waits, bounded, for a released display to leave the active list.
+fn wait_until_gone(id: u32) {
     let started = Instant::now();
-    while started.elapsed() < Duration::from_millis(900) {
+    while started.elapsed() < Duration::from_secs(2) && CGDisplay::new(id).is_active() {
         unsafe {
             NSRunLoop::currentRunLoop()
-                .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.05));
+                .runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.02));
         }
+    }
+}
+
+/// Drops and recreates a screen, which is what a display change looks like to the browser.
+pub fn reboot(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
+    let old = info(&config.name).map(|screen| screen.id);
+    remove(&config.name);
+    if let Some(id) = old {
+        wait_until_gone(id);
     }
     ensure(config)
 }
