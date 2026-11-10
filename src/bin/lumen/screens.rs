@@ -81,8 +81,8 @@ impl Drop for Screen {
 
 thread_local! {
     static SCREENS: RefCell<Vec<Screen>> = const { RefCell::new(Vec::new()) };
-    /// A rename removes and recreates a display; a rescan must not restore the old name meanwhile.
-    static RENAMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// While a display is being created, removed or renamed, a rescan must not restore it.
+    static MUTATIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     static PREVIEW: RefCell<Option<Preview>> = const { RefCell::new(None) };
 }
 
@@ -265,6 +265,7 @@ pub fn prune() {
 
 /// Creates a screen if it does not exist, or replaces it when its geometry changed.
 pub fn ensure(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
+    let _mutation = begin_mutation();
     if config.name.trim().is_empty() {
         return Err("a virtual screen needs a name".to_string());
     }
@@ -309,16 +310,26 @@ pub fn ensure(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
 }
 
 /// Recreates every auto-create screen after launch, wake or a display change.
-pub fn set_renaming(active: bool) {
-    RENAMING.with(|flag| flag.set(active));
+/// Keeps rescans out of any display create, remove, reboot or rename sequence.
+pub struct Mutation;
+
+impl Drop for Mutation {
+    fn drop(&mut self) {
+        MUTATIONS.with(|count| count.set(count.get().saturating_sub(1)));
+    }
 }
 
-pub fn is_renaming() -> bool {
-    RENAMING.with(|flag| flag.get())
+pub fn begin_mutation() -> Mutation {
+    MUTATIONS.with(|count| count.set(count.get() + 1));
+    Mutation
+}
+
+pub fn is_mutating() -> bool {
+    MUTATIONS.with(|count| count.get() > 0)
 }
 
 pub fn restore(config: &Config) {
-    if RENAMING.with(|flag| flag.get()) {
+    if is_mutating() {
         return;
     }
     prune();
@@ -371,6 +382,7 @@ fn wait_until_gone(id: u32) {
 
 /// Drops and recreates a screen, which is what a display change looks like to the browser.
 pub fn reboot(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
+    let _mutation = begin_mutation();
     let old = info(&config.name).map(|screen| screen.id);
     remove(&config.name);
     if let Some(id) = old {
@@ -381,6 +393,7 @@ pub fn reboot(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
 
 /// Drops the screen. The display disappears a moment later.
 pub fn remove(name: &str) -> bool {
+    let _mutation = begin_mutation();
     SCREENS.with(|screens| {
         let mut screens = screens.borrow_mut();
         let Some(index) = screens.iter().position(|screen| screen.info.name == name) else {
@@ -394,6 +407,7 @@ pub fn remove(name: &str) -> bool {
 /// Removes a screen and waits for the Window Server to let go of its id, so a display with a
 /// new name can be created immediately afterwards.
 pub fn remove_and_wait(name: &str) -> bool {
+    let _mutation = begin_mutation();
     let id = info(name).map(|screen| screen.id);
     let removed = remove(name);
     if let Some(id) = id {

@@ -43,6 +43,7 @@ you need isolation or a real bundle identity:
 ./scripts/dev/stop.sh                # stops only the pid in dist/lumen-dev.pid
 ./scripts/dev/reset.sh               # clears the dev support dir
 ./scripts/dev/shot.sh --page virtual --screen agent --out /tmp/settings.png
+./scripts/dev/smoke.sh               # pages, agent start/capture/stop, screen create/remove
 ```
 
 - The dev app uses `~/Library/Application Support/Lumen Dev`, so it cannot overwrite the installed
@@ -129,6 +130,9 @@ the readout immediately. The editor marks the input the display
 reports as active (VCP 0x60) or the one this app last switched to, and the input list scrolls
 with the page.
 
+If every VCP read fails, the Displays page shows which read failed and asks you to wake the
+monitor and refresh, instead of just showing an empty controls group.
+
 Each input row has a **Test** button. It asks for confirmation first, then sends that input's
 command (with the protocol fallbacks) and records whether the display actually left: a ✓ or ✗
 badge in the row, persisted in the config. The warning matters because a monitor that accepts the
@@ -205,12 +209,13 @@ process exits and breaks removal). At most four virtual screens can exist, sizes
 Settings > Virtual Displays edits the name, geometry, 1x/2x, refresh and auto-create of each
 screen, with preview, apply and remove. Renaming recreates the display because its name is fixed
 at creation: the agent browser on it is closed, its capture folder moves, and its desktop
-position may change. A rename guard keeps a display rescan from restoring the old name halfway
-through. Each screen's menu entry also has preview and remove actions.
+position may change. A display mutation guard keeps a rescan from restoring a screen while it is
+being created, removed or renamed. Each screen's menu entry also has preview and remove actions.
 
 The same page holds the agent workspace defaults (start headless, home page, reopen the last
-session at launch) and capture retention (keep the last 5, 20, 50 or all, open or delete the
-folder).
+session at launch), an Agents panel that lists live sessions with Screenshot and Stop and starts
+new ones on the selected display, and capture retention (keep the last 5, 20, 50 or all, open or
+delete the folder).
 
 ### Handing a screen to an agent
 

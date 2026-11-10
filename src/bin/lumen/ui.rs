@@ -122,6 +122,9 @@ pub struct Ui {
     screen_refreshes: Vec<Retained<NSTextField>>,
     screen_hidpi: Vec<Retained<NSButton>>,
     screen_auto: Vec<Retained<NSButton>>,
+    agent_picker: Option<Retained<NSPopUpButton>>,
+    agent_session_names: Vec<String>,
+    agent_note: Option<String>,
 }
 
 impl Default for Ui {
@@ -150,6 +153,9 @@ impl Default for Ui {
             screen_refreshes: Vec::new(),
             screen_hidpi: Vec::new(),
             screen_auto: Vec::new(),
+            agent_picker: None,
+            agent_session_names: Vec::new(),
+            agent_note: None,
         }
     }
 }
@@ -910,6 +916,34 @@ unsafe fn input_row(theme: &Theme, index: usize, input: &InputSetting) -> Retain
     row
 }
 
+unsafe fn agent_session_row(theme: &Theme, session: &crate::agent::Session, index: usize) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    let alive = crate::agent::session_alive(session);
+    let mode = if session.headless { "headless" } else { "windowed" };
+    let detail = if alive {
+        format!("{mode} · pid {} · port {}", session.pid, session.port)
+    } else {
+        format!("{mode} · stopped")
+    };
+    let bar = hstack();
+    bar.setSpacing(8.0);
+    let shot = button("Screenshot", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(agentShot:));
+    auto_layout(&shot);
+    fix_width(&shot, 88.0);
+    fix_height(&shot, 24.0);
+    tag(&shot, index as isize);
+    let stop = button("Stop", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(agentStop:));
+    auto_layout(&stop);
+    fix_width(&stop, 60.0);
+    fix_height(&stop, 24.0);
+    tag(&stop, index as isize);
+    bar.addArrangedSubview(&shot);
+    bar.addArrangedSubview(&stop);
+    finish_row(&row, theme, &session.name, &detail, &bar, Some(156.0));
+    row
+}
+
 unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
     let (scroll, stack) = page_stack(host);
     UI.with(|ui| {
@@ -1083,6 +1117,70 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
     stack.setCustomSpacing_afterView(24.0, &agent_note);
     UI.with(|ui| ui.borrow_mut().agent_url = Some(url_field));
 
+    let agents_heading = section_heading("Agents", theme);
+    stack.addArrangedSubview(&agents_heading);
+    stack.setCustomSpacing_afterView(8.0, &agents_heading);
+    UI.with(|ui| {
+        let mut ui = ui.borrow_mut();
+        ui.agent_picker = None;
+        ui.agent_session_names.clear();
+    });
+    let sessions = crate::agent::sessions();
+    let mut agent_rows: Vec<Retained<NSView>> = Vec::new();
+    for (index, session) in sessions.iter().enumerate() {
+        agent_rows.push(agent_session_row(theme, session, index));
+        UI.with(|ui| ui.borrow_mut().agent_session_names.push(session.name.clone()));
+    }
+    if screens.is_empty() {
+        let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&row);
+        fix_height(&row, 40.0);
+        let note = auto_label("Create a virtual display first.", 12.0, NSFontWeightRegular, &theme.secondary);
+        row.addSubview(&note);
+        note.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+        note.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+        agent_rows.push(row);
+    } else {
+        let start_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&start_row);
+        let bar = hstack();
+        bar.setSpacing(8.0);
+        let names: Vec<String> = screens.iter().map(|screen| screen.name.clone()).collect();
+        let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let selected = names.iter().position(|name| name == "Agent").unwrap_or(0);
+        let picker = popup(&bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), &name_refs, selected, sel!(noop:));
+        auto_layout(&picker);
+        fix_width(&picker, 150.0);
+        fix_height(&picker, 26.0);
+        let headless = button("Headless", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(agentStart:));
+        auto_layout(&headless);
+        fix_width(&headless, 90.0);
+        fix_height(&headless, 26.0);
+        tag(&headless, 0);
+        let windowed = button("Windowed", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(agentStart:));
+        auto_layout(&windowed);
+        fix_width(&windowed, 90.0);
+        fix_height(&windowed, 26.0);
+        tag(&windowed, 1);
+        bar.addArrangedSubview(&picker);
+        bar.addArrangedSubview(&headless);
+        bar.addArrangedSubview(&windowed);
+        finish_row(&start_row, theme, "Start an agent", "Runs on the selected virtual display.", &bar, Some(346.0));
+        agent_rows.push(start_row);
+        UI.with(|ui| ui.borrow_mut().agent_picker = Some(picker));
+    }
+    let agents = group_container(theme, agent_rows);
+    hug_height(&agents);
+    stack.addArrangedSubview(&agents);
+    if let Some(note) = UI.with(|ui| ui.borrow().agent_note.clone()) {
+        let row = paragraph_row(&note, 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+        stack.setCustomSpacing_afterView(8.0, &agents);
+        stack.addArrangedSubview(&row);
+        stack.setCustomSpacing_afterView(24.0, &row);
+    } else {
+        stack.setCustomSpacing_afterView(24.0, &agents);
+    }
+
     let captures_heading = section_heading("Captures", theme);
     stack.addArrangedSubview(&captures_heading);
     stack.setCustomSpacing_afterView(8.0, &captures_heading);
@@ -1219,6 +1317,17 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     hug_height(&header);
     stack.addArrangedSubview(&header);
     stack.setCustomSpacing_afterView(20.0, &header);
+
+    if let Some(error) = &display.ddc_error {
+        let note = paragraph_row(
+            &format!("DDC reads failed: {error}. Wake the monitor and choose Refresh from the menu to retry."),
+            11.0,
+            &theme.secondary,
+            host.bounds().size.width - list_width - 1.0 - MARGIN * 2.0,
+        );
+        stack.addArrangedSubview(&note);
+        stack.setCustomSpacing_afterView(16.0, &note);
+    }
 
     let menu_heading = section_heading("Menu", theme);
     stack.addArrangedSubview(&menu_heading);
@@ -1809,7 +1918,7 @@ fn place_window(window: &NSWindow, screen: &NSScreen, size: NSSize) {
 
 /// Moves the settings window to the main display if its screen disappeared.
 pub fn rescue_windows() {
-    if crate::screens::is_renaming() {
+    if crate::screens::is_mutating() {
         return;
     }
     let window = UI.with(|ui| ui.borrow().window.clone());
@@ -2739,6 +2848,118 @@ declare_class!(
                 model.config.reset_inputs(&key, &displays);
             });
             crate::after_change();
+        }
+
+        #[method(agentStart:)]
+        fn agent_start(&self, sender: *mut AnyObject) {
+            let headless = sender_tag(sender) == 0;
+            let name = UI.with(|ui| {
+                ui.borrow()
+                    .agent_picker
+                    .as_ref()
+                    .and_then(|picker| unsafe { picker.titleOfSelectedItem() })
+                    .map(|title| title.to_string())
+            });
+            let Some(name) = name else {
+                return;
+            };
+            UI.with(|ui| {
+                ui.borrow_mut().agent_note = Some(format!("Starting {name}…"));
+            });
+            crate::after_change();
+            std::thread::spawn(move || {
+                let request = serde_json::json!({
+                    "cmd": "agent.start",
+                    "name": name,
+                    "headless": headless,
+                });
+                let reply = crate::control::agent_start(&request);
+                let value: serde_json::Value =
+                    serde_json::from_str(&reply).unwrap_or(serde_json::Value::Null);
+                let ok = value
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                let message = if ok {
+                    format!("Agent started on {name}")
+                } else {
+                    value
+                        .get("error")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("agent could not start")
+                        .to_string()
+                };
+                crate::on_main(move || {
+                    UI.with(|ui| {
+                        ui.borrow_mut().agent_note = Some(message);
+                    });
+                    crate::after_change();
+                });
+            });
+        }
+
+        #[method(agentStop:)]
+        fn agent_stop(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender).max(0) as usize;
+            let name = UI.with(|ui| {
+                ui.borrow().agent_session_names.get(index).cloned()
+            });
+            let Some(name) = name else {
+                return;
+            };
+            let _ = crate::agent::stop(&name);
+            crate::agent::stop_profile(&name);
+            crate::with_model(|model| {
+                model.config.forget_agent_session(&name);
+                model.message = Some(format!("Stopped the agent on {name}"));
+            });
+            UI.with(|ui| {
+                ui.borrow_mut().agent_note = Some(format!("Stopped {name}"));
+            });
+            crate::after_change();
+        }
+
+        #[method(agentShot:)]
+        fn agent_shot(&self, sender: *mut AnyObject) {
+            let index = sender_tag(sender).max(0) as usize;
+            let name = UI.with(|ui| {
+                ui.borrow().agent_session_names.get(index).cloned()
+            });
+            let Some(name) = name else {
+                return;
+            };
+            let Some(session) = crate::agent::session(&name) else {
+                return;
+            };
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_millis())
+                .unwrap_or(0);
+            let path = crate::config::Config::support_dir()
+                .join("agents")
+                .join(&name)
+                .join(format!("page-{stamp}.png"));
+            let limit = crate::with_model(|model| model.config.capture_limit);
+            UI.with(|ui| {
+                ui.borrow_mut().agent_note = Some(format!("Capturing {name}…"));
+            });
+            crate::after_change();
+            std::thread::spawn(move || {
+                let result = crate::cdp::screenshot(session.port, &path);
+                if result.is_ok() {
+                    crate::screens::prune_captures(path.parent(), limit);
+                }
+                let message = match result {
+                    Ok(()) => format!("Saved {}", path.display()),
+                    Err(error) => error,
+                };
+                crate::on_main(move || {
+                    UI.with(|ui| {
+                        ui.borrow_mut().agent_note = Some(message);
+                    });
+                    crate::after_change();
+                });
+            });
         }
 
         #[method(toggleAgentHeadless:)]

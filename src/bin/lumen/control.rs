@@ -10,11 +10,15 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Bumped when the request or reply shape changes in a way a client could notice.
 pub const PROTOCOL: u64 = 1;
+
+/// Starts are serialized: two callers on the same profile otherwise race through a forwarded
+/// launch and one of them records a pid that exits immediately.
+static AGENT_START: Mutex<()> = Mutex::new(());
 
 pub fn socket_path() -> PathBuf {
     Config::support_dir().join("control.sock")
@@ -341,6 +345,7 @@ fn remove(name: &str) -> String {
 }
 
 pub(crate) fn agent_start(request: &Value) -> String {
+    let _starting = AGENT_START.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
         return error("missing name");
     };
