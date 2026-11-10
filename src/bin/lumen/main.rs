@@ -1,12 +1,16 @@
 //! Lumen: native menu bar, AppKit settings window.
 
+mod agent;
+mod cli;
 mod config;
+mod control;
 mod engine;
 mod login;
 mod menu;
 mod model;
 mod status;
 mod ui;
+mod screens;
 
 use config::Protocol;
 use menu::Action;
@@ -29,7 +33,7 @@ thread_local! {
 }
 
 /// Runs `job` on the main thread on the next run-loop turn.
-fn on_main(job: impl FnOnce() + Send + 'static) {
+pub(crate) fn on_main(job: impl FnOnce() + Send + 'static) {
     dispatch::Queue::main().exec_async(job);
 }
 
@@ -130,6 +134,10 @@ fn spawn_scan() {
         let displays = engine::scan();
         on_main(move || {
             with_model(|model| model.set_displays(displays));
+            // Screens that exist only in memory are recreated after launch, wake and display
+            // changes. `restore` is a no-op for screens that are already up.
+            let config = with_model(|model| model.config.clone());
+            screens::restore(&config);
             after_change();
         });
     });
@@ -282,6 +290,11 @@ pub fn run_action(action: Action) {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("virtual") | Some("agent")) {
+        std::process::exit(cli::run(&args));
+    }
+
     if let Some(command) = std::env::args().nth(1) {
         match command.as_str() {
             "--login-status" => {
@@ -337,6 +350,7 @@ fn main() {
 
     let actions = ui::init();
     status::init(&actions);
+    control::serve();
 
     spawn_scan();
 

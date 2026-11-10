@@ -49,6 +49,14 @@ Requires macOS 14+ on Apple silicon. No accessibility, screen recording, or root
   behind the M1 HDMI bridge), reads and writes VCP features over I2C, and parses capabilities
   strings for advertised input codes.
 - **Signal control** (`src/native`): `CGSConfigureDisplayEnabled`, resolved with `dlsym`.
+- **Virtual screens** (`src/bin/lumen/screens.rs`): `CGVirtualDisplay`, a private CoreGraphics API
+  declared by name and driven with `msg_send`, because there is no public way to create a display.
+  A screen is a real display in the Window Server with no physical output; the menu lists it and
+  `lumen virtual ...` creates, measures, captures and removes it.
+- **Control socket** (`src/bin/lumen/control.rs`): a Unix socket at
+  `~/Library/Application Support/Lumen/control.sock`, mode 0600, one JSON request and one reply per
+  connection. The menu-bar app owns the displays, so the CLI and agent harnesses ask it over this
+  socket rather than creating anything themselves.
 - **`src/bin/probe.rs`**: `cargo run --bin lumen-probe -- list` for debugging a display.
 
 Settings persist to `~/Library/Application Support/Lumen/config.json`: behaviour switches plus
@@ -121,6 +129,55 @@ Switch** enabled, the monitor locks onto whichever HDMI/DP input still has a liv
 **Bring <display> back** drives the output again and the monitor follows the returning signal.
 Verified round trip on the LG.
 
+## Virtual screens
+
+A virtual screen exists only in memory. Nothing appears on your monitors, but macOS treats it as
+a real display: it has its own Space, its own menu bar, and can be arranged, mirrored, captured
+and used as a recording source.
+
+```sh
+lumen virtual ensure --name Agent            # create, prints display id and bounds
+lumen virtual list                           # all live virtual screens
+lumen virtual bounds --name Agent            # geometry after any rearrangement
+lumen virtual screenshot --name Agent --out frame.png
+lumen virtual remove --name Agent
+```
+
+Screens are persisted in `config.json` with `auto_create`, so they are recreated after launch and
+after wake. The default is 1920x1080 at 1x, placed to the right of the main display; the origin is
+read back from `CGDisplayBounds`, never pinned (pinning keeps the display registered until the
+process exits and breaks removal).
+
+### Handing a screen to an agent
+
+```sh
+lumen agent chrome --name Agent --url https://example.com
+```
+
+Returns the CDP endpoint, port, profile and screen geometry. Lumen launches a Chromium-family
+browser with a dedicated profile and remote debugging, positioned on the virtual screen. The
+agent then connects with Playwright's `chromium.connectOverCDP(endpoint)`. No synthetic input is
+used, so the cursor never moves.
+
+Browser detection tries installed Chromium browsers (Chrome, Chromium, Brave, Edge) and then the
+Chrome for Testing build in the Playwright cache. `--browser <bundle-id|path.app>` selects one
+explicitly.
+
+What the launch guarantees, and what it does not:
+
+| Guarantee | How |
+| --- | --- |
+| Cursor does not move | no `CGEvent` anywhere in the path |
+| Your app is in front before and after | the previous front app is restored once the browser window appears |
+| The browser window is off your display | pinned position on the virtual screen |
+| No DDC, no input switching | virtual screens have no DDC path |
+
+Chromium activates itself when it creates its first window, and neither `activates = false` nor
+`open -g` changes that, so there is a brief focus flash. Lumen puts the previous app back only if
+the browser is still frontmost, so if you switched elsewhere during the launch it leaves you
+alone. Clipboard and native browser dialogs remain global: drive pages through CDP, and pre-grant
+permissions in the profile rather than clicking dialogs.
+
 ## Caveats
 
 - Release needs the monitor's OSD **Auto Input Switch** on.
@@ -131,6 +188,13 @@ Verified round trip on the LG.
   several chunks), so a scan reads brightness, contrast and volume first and the input list last.
   In the other order those control reads come back empty and the menu loses its sliders.
 - The settings window is fixed-size; dynamic resizing would need Auto Layout constraints.
+- `CGVirtualDisplay` is private API. It works on macOS 27.3 (measured) and has shipped in other
+  apps for years, but an OS update can break it, and the App Store does not accept it.
+- Removing a virtual screen releases only the display object. Releasing the descriptor first
+  crashes in `-[CGVirtualDisplay dealloc]`, so the descriptor, settings and mode array are left to
+  the process exit: three small objects per removed screen.
+- Screenshots and any preview need Screen Recording permission when Lumen runs as a signed bundle.
+  The virtual display itself needs no permission to create or place windows on.
 
 ## Roadmap
 
