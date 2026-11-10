@@ -79,6 +79,13 @@ fn virtual_command(args: &[String]) -> Value {
             };
             send(json!({ "cmd": "virtual.remove", "name": name }))
         }
+        "preview" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            let show = !flag(args, "--hide");
+            send(json!({ "cmd": "virtual.preview", "name": name, "show": show }))
+        }
         "screenshot" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
@@ -160,6 +167,7 @@ fn help() {
 lumen virtual ensure --name <name> [--width N] [--height N] [--hidpi] [--refresh N]
 lumen virtual bounds --name <name>
 lumen virtual screenshot --name <name> [--out path.png]
+lumen virtual preview --name <name> [--hide]
 lumen virtual remove --name <name>
 lumen agent start --name <screen> [--url URL] [--port N] [--browser bundle-id|path.app]
 lumen agent stop --name <screen>

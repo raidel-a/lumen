@@ -642,6 +642,11 @@ fn make_actions() -> Retained<Actions> {
 }
 
 /// Creates the shared action target and subscribes to display-configuration and wake events.
+/// The shared target class, for menu actions that need to hand it to AppKit.
+pub fn target() -> Option<Retained<Actions>> {
+    ACTIONS.with(|slot| slot.borrow().clone())
+}
+
 pub fn init() -> Retained<Actions> {
     let actions = ACTIONS.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -760,6 +765,11 @@ declare_class!(
             if let Some(action) = crate::status::item_action(item) {
                 crate::run_action(action);
             }
+        }
+
+        #[method(previewTick:)]
+        fn preview_tick(&self, _timer: *mut AnyObject) {
+            crate::screens::preview_tick();
         }
 
         #[method(menuControlChanged:)]
@@ -1069,7 +1079,16 @@ declare_class!(
 
     unsafe impl NSWindowDelegate for Actions {
         #[method(windowWillClose:)]
-        fn window_will_close(&self, _notification: &objc2_foundation::NSNotification) {
+        fn window_will_close(&self, notification: &objc2_foundation::NSNotification) {
+            // The preview window owns its own timer; stop it without closing the window again.
+            if let Some(object) = unsafe { notification.object() } {
+                let closing = &*object as *const AnyObject as *const ();
+                if crate::screens::preview_window_ptr().map(|ptr| ptr as *const ()) == Some(closing)
+                {
+                    crate::screens::preview_closed();
+                    return;
+                }
+            }
             // Drop the window once the close notification has finished unwinding, so its views
             // and layer go back with it. Reopening builds a fresh one.
             STALE.with(|stale| {
