@@ -51,6 +51,8 @@ you need isolation or a real bundle identity:
 - `lumen settings [--page general|displays|virtual|about] [--screen invocation|agent|main|last]`
   opens a page through the control socket. `lumen settings state` reports the page and screen.
 - `scripts/dev/ax.swift` lists windows and presses or sets controls by title or description.
+- `lumen quit` asks the running app to quit cleanly, releasing virtual displays and agent
+  browsers. `scripts/dev/stop.sh` uses it before falling back to the recorded PID.
 
 Settings placement is a preference: display I click from, Agent, main display, or last display.
 The default is the display whose menu bar the command came from.
