@@ -19,7 +19,8 @@ use objc2_app_kit::{
     NSFont, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSImageView,
     NSLayoutAttribute, NSLayoutConstraintOrientation, NSStackView, NSStackViewDistribution,
     NSUserInterfaceLayoutOrientation,
-    NSAccessibility, NSForegroundColorAttributeName, NSLineBreakMode,
+    NSAccessibility, NSControlTextEditingDelegate, NSForegroundColorAttributeName, NSLineBreakMode,
+    NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
     NSMenu, NSMenuDelegate,
     NSPasteboard, NSPasteboardTypeString,
     NSPopUpButton, NSScreen, NSScrollView, NSSlider, NSSwitch, NSTextAlignment, NSTextField,
@@ -50,6 +51,15 @@ pub enum Page {
 }
 
 impl Page {
+    fn index(self) -> usize {
+        match self {
+            Page::General => 0,
+            Page::Displays => 1,
+            Page::Virtual => 2,
+            Page::About => 3,
+        }
+    }
+
     fn slug(self) -> &'static str {
         match self {
             Page::General => "general",
@@ -95,6 +105,9 @@ pub struct Ui {
     host: Option<Retained<NSView>>,
     scroll: Option<Retained<NSScrollView>>,
     built_page: Option<Page>,
+    sidebar: Option<Retained<NSTableView>>,
+    display_list: Option<Retained<NSTableView>>,
+    suppress_selection: bool,
     login_note: Option<String>,
     brightness_value: Option<Retained<NSTextField>>,
     contrast_value: Option<Retained<NSTextField>>,
@@ -120,6 +133,9 @@ impl Default for Ui {
             host: None,
             scroll: None,
             built_page: None,
+            sidebar: None,
+            display_list: None,
+            suppress_selection: false,
             login_note: None,
             brightness_value: None,
             contrast_value: None,
@@ -141,6 +157,7 @@ impl Default for Ui {
 thread_local! {
     static UI: RefCell<Ui> = RefCell::new(Ui::default());
     static ACTIONS: RefCell<Option<Retained<Actions>>> = const { RefCell::new(None) };
+    static SOURCE: RefCell<Option<Retained<SourceList>>> = const { RefCell::new(None) };
     /// A closed window waiting for the run loop to finish the close before it is released.
     static STALE: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
 }
@@ -222,12 +239,6 @@ fn wire(control: &NSControl, action: objc2::runtime::Sel) {
 
 fn tag(control: &NSControl, value: isize) {
     unsafe { control.setTag(value) };
-}
-
-fn pin_top(control: &NSView) {
-    unsafe {
-        control.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewMinYMargin);
-    }
 }
 
 fn button(
@@ -371,18 +382,6 @@ fn card_box(theme: &Theme, parent: &NSView, rect: NSRect) -> Retained<NSBox> {
         parent.addSubview(&bx);
         bx
     }
-}
-
-/// Soft rounded background used for the selected sidebar or display row.
-unsafe fn selection_background(parent: &NSView, rect: NSRect) -> Retained<NSBox> {
-    let bg = NSBox::initWithFrame(mtm().alloc(), rect);
-    bg.setBoxType(NSBoxType::NSBoxCustom);
-    bg.setTitlePosition(NSTitlePosition::NSNoTitle);
-    bg.setBorderWidth(0.0);
-    bg.setCornerRadius(7.0);
-    bg.setFillColor(&NSColor::unemphasizedSelectedContentBackgroundColor());
-    parent.addSubview(&bg);
-    bg
 }
 
 // Document view for scrolling content. Flipped so the page builder can walk downwards.
@@ -1157,30 +1156,16 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     UI.with(|ui| ui.borrow_mut().selected = selected);
 
     unsafe {
-        for (index, display) in model.displays.iter().enumerate() {
-            let row = NSRect::new(
-                NSPoint::new(8.0, bounds.size.height - 44.0 - index as f64 * 38.0),
-                NSSize::new(list_width - 16.0, 34.0),
-            );
-            if index == selected {
-                let background = selection_background(host, row);
-                pin_top(&background);
-            }
-            let b = button(
-                &display.name,
-                host,
-                NSRect::new(
-                    NSPoint::new(row.origin.x + 10.0, row.origin.y + 6.0),
-                    NSSize::new(row.size.width - 12.0, 22.0),
-                ),
-                false,
-                sel!(selectDisplay:),
-            );
-            tag(&b, index as isize);
-            b.setAlignment(NSTextAlignment::Left);
-            b.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, NSFontWeightRegular)));
-            pin_top(&b);
-        }
+        let (display_scroll, display_table) = make_source_scroll(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(list_width, bounds.size.height)),
+            34.0,
+            list_width - 32.0,
+            false,
+        );
+        UI.with(|ui| ui.borrow_mut().display_list = Some(display_table.clone()));
+        host.addSubview(&display_scroll);
+        display_table.reloadData();
+        select_row(&display_table, selected);
         let line = NSBox::initWithFrame(
             mtm().alloc(),
             NSRect::new(NSPoint::new(list_width, 0.0), NSSize::new(1.0, bounds.size.height)),
@@ -1552,30 +1537,16 @@ fn build_chrome(window: &NSWindow) {
         content.addSubview(&effect);
 
         let page = UI.with(|ui| ui.borrow().page);
-        for (index, title) in PAGES.iter().enumerate() {
-            let row = NSRect::new(
-                NSPoint::new(8.0, bounds.size.height - 40.0 - index as f64 * 32.0),
-                NSSize::new(SIDEBAR - 16.0, 30.0),
-            );
-            if Page::from_row(index as isize) == page {
-                let background = selection_background(&content, row);
-                pin_top(&background);
-            }
-            let b = button(
-                title,
-                &content,
-                NSRect::new(
-                    NSPoint::new(row.origin.x + 10.0, row.origin.y + 5.0),
-                    NSSize::new(row.size.width - 12.0, 20.0),
-                ),
-                false,
-                sel!(pageChanged:),
-            );
-            tag(&b, index as isize);
-            b.setAlignment(NSTextAlignment::Left);
-            b.setFont(Some(&NSFont::systemFontOfSize_weight(13.0, NSFontWeightRegular)));
-            pin_top(&b);
-        }
+        let (sidebar_scroll, sidebar) = make_source_scroll(
+            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR, bounds.size.height)),
+            30.0,
+            SIDEBAR - 32.0,
+            false,
+        );
+        UI.with(|ui| ui.borrow_mut().sidebar = Some(sidebar.clone()));
+        content.addSubview(&sidebar_scroll);
+        sidebar.reloadData();
+        select_row(&sidebar, page.index());
 
         let line = NSBox::initWithFrame(
             mtm().alloc(),
@@ -1721,6 +1692,12 @@ pub fn open_command(page: Option<&str>, screen: Option<&str>) -> Result<(), Stri
             model.config.settings_page = page.slug().to_string();
             model.config.save();
         });
+        let sidebar = UI.with(|ui| ui.borrow().sidebar.clone());
+        if let Some(sidebar) = sidebar {
+            if unsafe { sidebar.selectedRow() } != page.index() as isize {
+                select_row(&sidebar, page.index());
+            }
+        }
     }
     open(None, screen);
     Ok(())
@@ -1999,6 +1976,221 @@ where
 
 fn message(text: &str) {
     crate::with_model(|model| model.message = Some(text.to_string()));
+}
+
+declare_class!(
+    struct SourceList;
+
+    unsafe impl ClassType for SourceList {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "LumenSourceList";
+    }
+
+    impl DeclaredClass for SourceList {
+        type Ivars = ();
+    }
+
+    unsafe impl NSObjectProtocol for SourceList {}
+
+    unsafe impl NSControlTextEditingDelegate for SourceList {}
+
+    unsafe impl NSTableViewDataSource for SourceList {
+        #[method(numberOfRowsInTableView:)]
+        fn number_of_rows(&self, table: &NSTableView) -> isize {
+            let (sidebar, display_list) = UI.with(|ui| {
+                let ui = ui.borrow();
+                (ui.sidebar.clone(), ui.display_list.clone())
+            });
+            if sidebar
+                .as_ref()
+                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                PAGES.len() as isize
+            } else if display_list
+                .as_ref()
+                .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                crate::with_model(|model| model.displays.len() as isize)
+            } else {
+                0
+            }
+        }
+    }
+
+    unsafe impl NSTableViewDelegate for SourceList {
+        #[method_id(tableView:viewForTableColumn:row:)]
+        fn cell_view(
+            &self,
+            table: &NSTableView,
+            _column: Option<&NSTableColumn>,
+            row: isize,
+        ) -> Option<Retained<NSView>> {
+            let (sidebar, display_list) = UI.with(|ui| {
+                let ui = ui.borrow();
+                (ui.sidebar.clone(), ui.display_list.clone())
+            });
+            let text = if sidebar
+                .as_ref()
+                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                PAGES.get(row as usize).copied().unwrap_or("").to_string()
+            } else if display_list
+                .as_ref()
+                .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                crate::with_model(|model| {
+                    model
+                        .displays
+                        .get(row as usize)
+                        .map(|display| display.name.clone())
+                        .unwrap_or_default()
+                })
+            } else {
+                String::new()
+            };
+            unsafe {
+                let cell = NSView::initWithFrame(
+                    mtm().alloc(),
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(table.frame().size.width, table.rowHeight())),
+                );
+                let label = label(
+                    &text,
+                    13.0,
+                    NSFontWeightRegular,
+                    &NSColor::labelColor(),
+                    NSRect::new(NSPoint::new(12.0, 6.0), NSSize::new(table.frame().size.width - 24.0, 18.0)),
+                );
+                label.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
+                cell.addSubview(&label);
+                Some(cell)
+            }
+        }
+
+        #[method(tableViewSelectionDidChange:)]
+        fn selection_changed(&self, notification: &NSNotification) {
+            if UI.with(|ui| ui.borrow().suppress_selection) {
+                return;
+            }
+            let Some(object) = (unsafe { notification.object() }) else {
+                return;
+            };
+            let table = unsafe { &*(&*object as *const AnyObject as *const NSTableView) };
+            let (sidebar, display_list) = UI.with(|ui| {
+                let ui = ui.borrow();
+                (ui.sidebar.clone(), ui.display_list.clone())
+            });
+            if sidebar
+                .as_ref()
+                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                let row = unsafe { table.selectedRow() };
+                if row < 0 {
+                    return;
+                }
+                let page = Page::from_row(row);
+                if UI.with(|ui| ui.borrow().page) == page {
+                    return;
+                }
+                UI.with(|ui| ui.borrow_mut().page = page);
+                crate::with_model(|model| {
+                    model.config.settings_page = page.slug().to_string();
+                    model.config.save();
+                });
+                rebuild_page();
+                return;
+            }
+            if display_list
+                .as_ref()
+                .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
+                .unwrap_or(false)
+            {
+                let row = unsafe { table.selectedRow() };
+                if row < 0 {
+                    return;
+                }
+                if UI.with(|ui| ui.borrow().selected) == row as usize {
+                    return;
+                }
+                UI.with(|ui| ui.borrow_mut().selected = row as usize);
+                rebuild_page();
+            }
+        }
+    }
+);
+
+fn source_list() -> Retained<SourceList> {
+    SOURCE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            let object = mtm().alloc::<SourceList>().set_ivars(());
+            *slot = Some(unsafe { msg_send_id![super(object), init] });
+        }
+        slot.clone().expect("source list")
+    })
+}
+
+fn make_table(frame: NSRect, row_height: f64, column_width: f64) -> Retained<NSTableView> {
+    unsafe {
+        let table = NSTableView::initWithFrame(mtm().alloc(), frame);
+        table.setStyle(NSTableViewStyle::SourceList);
+        table.setRowHeight(row_height);
+        table.setHeaderView(None);
+        table.setAllowsEmptySelection(false);
+        table.setBackgroundColor(&NSColor::clearColor());
+        let column = NSTableColumn::initWithIdentifier(mtm().alloc(), &NSString::from_str("value"));
+        column.setWidth(column_width);
+        table.addTableColumn(&column);
+        let source = source_list();
+        table.setDataSource(Some(ProtocolObject::from_ref(&*source)));
+        table.setDelegate(Some(ProtocolObject::from_ref(&*source)));
+        table
+    }
+}
+
+fn make_source_scroll(
+    frame: NSRect,
+    row_height: f64,
+    column_width: f64,
+    scroller: bool,
+) -> (Retained<NSScrollView>, Retained<NSTableView>) {
+    unsafe {
+        let scroll = NSScrollView::initWithFrame(mtm().alloc(), frame);
+        scroll.setDrawsBackground(false);
+        scroll.setBorderType(objc2_app_kit::NSBorderType::NSNoBorder);
+        scroll.setHasVerticalScroller(scroller);
+        scroll.setAutoresizingMask(
+            NSAutoresizingMaskOptions::NSViewWidthSizable
+                | NSAutoresizingMaskOptions::NSViewHeightSizable,
+        );
+        let table = make_table(
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(frame.size.width, row_height),
+            ),
+            row_height,
+            column_width,
+        );
+        table.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable);
+        scroll.setDocumentView(Some(&table));
+        (scroll, table)
+    }
+}
+
+fn select_row(table: &NSTableView, row: usize) {
+    UI.with(|ui| ui.borrow_mut().suppress_selection = true);
+    unsafe {
+        table.selectRowIndexes_byExtendingSelection(
+            objc2_foundation::NSIndexSet::indexSetWithIndex(row).as_ref(),
+            false,
+        );
+    }
+    UI.with(|ui| ui.borrow_mut().suppress_selection = false);
 }
 
 declare_class!(
@@ -2440,29 +2632,6 @@ declare_class!(
                 model.config.save();
             });
             crate::after_change();
-        }
-
-        #[method(pageChanged:)]
-        fn page_changed(&self, sender: *mut AnyObject) {
-            let row = sender_tag(sender);
-            let page = Page::from_row(row);
-            UI.with(|ui| ui.borrow_mut().page = page);
-            crate::with_model(|model| {
-                model.config.settings_page = page.slug().to_string();
-                model.config.save();
-            });
-            let window = UI.with(|ui| ui.borrow().window.clone());
-            if let Some(window) = window {
-                build_chrome(&window);
-            }
-            rebuild_page();
-        }
-
-        #[method(selectDisplay:)]
-        fn select_display(&self, sender: *mut AnyObject) {
-            let index = sender_tag(sender).max(0) as usize;
-            UI.with(|ui| ui.borrow_mut().selected = index);
-            rebuild_page();
         }
 
         #[method(toggleShowInMenu:)]
