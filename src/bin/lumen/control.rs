@@ -1,11 +1,11 @@
 //! A local control socket for the CLI and for agent harnesses.
 //!
-//! The menu-bar app owns the virtual displays, so it has to be the process that answers requests
-//! about them. The socket is a Unix domain socket inside the app support folder, mode 0600, and
-//! speaks one JSON request and one JSON response per connection.
+//! The menu-bar app owns the virtual displays and the agent browsers, so it has to be the process
+//! that answers requests about them. The socket is a Unix domain socket inside the app support
+//! folder, mode 0600, and speaks one JSON request and one JSON response per connection.
 
 use crate::config::{Config, VirtualScreenConfig};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -13,8 +13,39 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
+/// Bumped when the request or reply shape changes in a way a client could notice.
+pub const PROTOCOL: u64 = 1;
+
 pub fn socket_path() -> PathBuf {
     Config::support_dir().join("control.sock")
+}
+
+/// Whether a live instance is already serving the socket.
+pub fn instance_running() -> bool {
+    UnixStream::connect(socket_path()).is_ok()
+}
+
+/// Removes the socket on the way out.
+pub fn shutdown() {
+    let _ = std::fs::remove_file(socket_path());
+}
+
+fn ok(fields: Map<String, Value>) -> String {
+    let mut fields = fields;
+    fields.insert("ok".to_string(), Value::Bool(true));
+    fields.insert("v".to_string(), json!(PROTOCOL));
+    Value::Object(fields).to_string()
+}
+
+fn ok_value(value: Value) -> String {
+    match value {
+        Value::Object(fields) => ok(fields),
+        other => ok(Map::from_iter([("result".to_string(), other)])),
+    }
+}
+
+fn error(message: impl Into<String>) -> String {
+    json!({ "ok": false, "v": PROTOCOL, "error": message.into() }).to_string()
 }
 
 /// Starts the listener once. Safe to call before the app run loop starts.
@@ -25,7 +56,7 @@ pub fn serve() {
     }
     if path.exists() {
         // A live app already owns the socket; a stale file from a crash can be replaced.
-        if UnixStream::connect(&path).is_ok() {
+        if instance_running() {
             if std::env::var_os("LUMEN_TRACE").is_some() {
                 eprintln!("control socket already served by another instance");
             }
@@ -77,10 +108,6 @@ where
         .map_err(|_| "the app did not answer in time".to_string())
 }
 
-fn error(message: impl Into<String>) -> String {
-    json!({ "ok": false, "error": message.into() }).to_string()
-}
-
 fn handle(line: &str) -> String {
     let request: Value = match serde_json::from_str(line) {
         Ok(request) => request,
@@ -90,34 +117,26 @@ fn handle(line: &str) -> String {
         return error("missing cmd");
     };
     match command {
+        "ping" => ok_value(json!({ "pid": std::process::id() })),
         "virtual.list" => match on_main_value(|| crate::screens::list()) {
-            Ok(screens) => json!({ "ok": true, "screens": screens_json(&screens) }).to_string(),
+            Ok(screens) => ok_value(json!({ "screens": screens_json(&screens) })),
             Err(message) => error(message),
         },
         "virtual.ensure" | "virtual.bounds" | "virtual.remove" | "virtual.screenshot" => {
             let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
                 return error("missing name");
             };
+            if let Err(message) = valid_name(&name) {
+                return error(message);
+            }
             match command {
                 "virtual.ensure" => ensure(&request, name),
                 "virtual.bounds" => match on_main_value(move || crate::screens::info(&name)) {
-                    Ok(Some(info)) => json!({ "ok": true, "screen": screen_json(&info) }).to_string(),
+                    Ok(Some(info)) => ok_value(json!({ "screen": screen_json(&info) })),
                     Ok(None) => error("no such virtual screen"),
                     Err(message) => error(message),
                 },
-                "virtual.remove" => {
-                    let reply = on_main_value(move || {
-                        let removed = crate::screens::remove(&name);
-                        crate::with_model(|model| model.config.remove_virtual_screen(&name));
-                        crate::after_change();
-                        removed
-                    });
-                    match reply {
-                        Ok(removed) if removed => json!({ "ok": true, "removed": true }).to_string(),
-                        Ok(_) => error("no such virtual screen"),
-                        Err(message) => error(message),
-                    }
-                }
+                "virtual.remove" => remove(&name),
                 _ => {
                     let path = request
                         .get("path")
@@ -125,7 +144,7 @@ fn handle(line: &str) -> String {
                         .map(std::path::PathBuf::from);
                     match on_main_value(move || crate::screens::screenshot(&name, path.as_deref())) {
                         Ok(Ok(path)) => {
-                            json!({ "ok": true, "path": path.display().to_string() }).to_string()
+                            ok_value(json!({ "path": path.display().to_string() }))
                         }
                         Ok(Err(message)) => error(message),
                         Err(message) => error(message),
@@ -133,9 +152,27 @@ fn handle(line: &str) -> String {
                 }
             }
         }
-        "agent.chrome" => chrome(&request),
+        "agent.start" | "agent.chrome" => agent_start(&request),
+        "agent.stop" => agent_stop(&request),
+        "agent.status" => agent_status(&request),
         other => error(format!("unknown command {other}")),
     }
+}
+
+fn valid_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("a screen needs a name".to_string());
+    }
+    if name.chars().count() > 64 {
+        return Err("a screen name is limited to 64 characters".to_string());
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_alphanumeric() || " -_.'".contains(character))
+    {
+        return Err("a screen name allows letters, digits, spaces, - _ . '".to_string());
+    }
+    Ok(())
 }
 
 fn ensure(request: &Value, name: String) -> String {
@@ -145,7 +182,7 @@ fn ensure(request: &Value, name: String) -> String {
             config.name = name.clone();
             config
         });
-    config.name = name;
+    config.name = name.clone();
     if let Some(width) = request.get("width").and_then(Value::as_u64) {
         config.width = width as u32;
     }
@@ -161,6 +198,26 @@ fn ensure(request: &Value, name: String) -> String {
     if let Some(auto) = request.get("auto_create").and_then(Value::as_bool) {
         config.auto_create = auto;
     }
+    if !(640..=7680).contains(&config.width) || !(480..=4320).contains(&config.height) {
+        return error("screen size must be between 640x480 and 7680x4320");
+    }
+    if !(1.0..=240.0).contains(&config.refresh) {
+        return error("refresh must be between 1 and 240 Hz");
+    }
+    if config.hidpi && (config.width > 3840 || config.height > 2160) {
+        return error("a 2x screen is limited to 3840x2160 logical points");
+    }
+
+    let existing = crate::with_model(|model| model.config.virtual_screen(&name).is_some());
+    if !existing {
+        let count = on_main_value(|| crate::screens::list().len()).unwrap_or(0);
+        if count >= crate::screens::MAX_SCREENS {
+            return error(format!(
+                "at most {} virtual screens can exist at once",
+                crate::screens::MAX_SCREENS
+            ));
+        }
+    }
 
     let reply = on_main_value(move || {
         let result = crate::screens::ensure(&config);
@@ -171,16 +228,41 @@ fn ensure(request: &Value, name: String) -> String {
         result
     });
     match reply {
-        Ok(Ok(info)) => json!({ "ok": true, "screen": screen_json(&info) }).to_string(),
+        Ok(Ok(info)) => ok_value(json!({ "screen": screen_json(&info) })),
         Ok(Err(message)) => error(message),
         Err(message) => error(message),
     }
 }
 
-fn chrome(request: &Value) -> String {
+fn remove(name: &str) -> String {
+    let name = name.to_string();
+    let reply = on_main_value(move || {
+        // Close the browser first, so its window cannot survive the display on another screen.
+        let stopped = crate::agent::stop(&name).unwrap_or(false);
+        let removed = crate::screens::remove(&name);
+        crate::with_model(|model| {
+            model.config.remove_virtual_screen(&name);
+            model.config.forget_agent_session(&name);
+        });
+        crate::after_change();
+        (removed, stopped)
+    });
+    match reply {
+        Ok((removed, stopped)) if removed => {
+            ok_value(json!({ "removed": true, "agent_stopped": stopped }))
+        }
+        Ok(_) => error("no such virtual screen"),
+        Err(message) => error(message),
+    }
+}
+
+fn agent_start(request: &Value) -> String {
     let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
         return error("missing name");
     };
+    if let Err(message) = valid_name(&name) {
+        return error(message);
+    }
     let url = request.get("url").and_then(Value::as_str).map(str::to_string);
     let port = request
         .get("port")
@@ -188,19 +270,43 @@ fn chrome(request: &Value) -> String {
         .unwrap_or(crate::agent::DEFAULT_PORT as u64) as u16;
     let browser = request.get("browser").and_then(Value::as_str).map(str::to_string);
 
-    let info = match on_main_value(move || crate::screens::info(&name)) {
+    // Reuse a live session instead of launching a second browser on the same profile.
+    let existing = on_main_value({
+        let name = name.clone();
+        move || crate::agent::session(&name)
+    });
+    if let Ok(Some(session)) = existing {
+        if crate::agent::endpoint_alive(session.port) {
+            let version = crate::agent::wait_for_cdp(session.port, Duration::from_millis(500))
+                .unwrap_or(Value::Null);
+            let endpoint = version.get("webSocketDebuggerUrl").cloned();
+            return ok_value(json!({
+                "reused": true,
+                "session": crate::agent::session_json(&session, endpoint),
+            }));
+        }
+        // Stale record: clear it before launching again.
+        let stale = name.clone();
+        let _ = on_main_value(move || {
+            let _ = crate::agent::stop(&stale);
+            crate::with_model(|model| model.config.forget_agent_session(&stale));
+        });
+    }
+
+    let screen_name = name.clone();
+    let info = match on_main_value(move || crate::screens::info(&screen_name)) {
         Ok(Some(info)) => info,
         Ok(None) => return error("no such virtual screen; call virtual.ensure first"),
         Err(message) => return error(message),
     };
 
-    let name_for_launch = info.name.clone();
     let launch = {
         let info = info.clone();
+        let name = name.clone();
         let url = url.clone();
         let browser = browser.clone();
         match on_main_value(move || {
-            crate::agent::launch(&info, &name_for_launch, url.as_deref(), port, browser.as_deref())
+            crate::agent::launch(&info, &name, url.as_deref(), port, browser.as_deref())
         }) {
             Ok(Ok(launch)) => launch,
             Ok(Err(message)) => return error(message),
@@ -208,36 +314,112 @@ fn chrome(request: &Value) -> String {
         }
     };
 
-    // Polling happens here, on the socket thread, so the app stays responsive.
-    match crate::agent::wait_for_cdp(launch.port, Duration::from_secs(45)) {
-        Ok(version) => {
-            // Chromium activates when its window appears, which can happen after CDP is ready.
-            // Keep checking for a short while and put the user's app back once it does.
-            if let Some(previous) = launch.previous.clone() {
-                let browser = launch.browser.clone();
-                for _ in 0..12 {
-                    std::thread::sleep(Duration::from_millis(300));
-                    let previous = previous.clone();
-                    let browser = browser.clone();
-                    let restored = on_main_value(move || {
-                        crate::agent::restore_front(&previous, &browser)
-                    })
-                    .unwrap_or(false);
-                    if restored {
-                        break;
-                    }
-                }
+    let version = match crate::agent::wait_for_cdp(launch.port, Duration::from_secs(45)) {
+        Ok(version) => version,
+        Err(message) => return error(message),
+    };
+    let pid = crate::agent::wait_for_pid(&launch, Duration::from_secs(5));
+
+    let session = crate::agent::new_session(&name, &launch, pid, url.clone());
+    let record = crate::agent::session_record(&session);
+    let registered = on_main_value({
+        let session = session.clone();
+        move || {
+            crate::agent::register(session.clone());
+            crate::with_model(|model| model.config.record_agent_session(record));
+        }
+    });
+    if let Err(message) = registered {
+        return error(message);
+    }
+
+    // Chromium activates when its window appears, which can happen after CDP is ready.
+    if let Some(previous) = launch.previous.clone() {
+        let browser = launch.browser.clone();
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(300));
+            let previous = previous.clone();
+            let browser = browser.clone();
+            let restored = on_main_value(move || crate::agent::restore_front(&previous, &browser))
+                .unwrap_or(false);
+            if restored {
+                break;
             }
-            json!({
-            "ok": true,
-            "port": launch.port,
-            "endpoint": version.get("webSocketDebuggerUrl").cloned().unwrap_or(Value::Null),
-            "browser": version.get("Browser").cloned().unwrap_or(Value::Null),
-            "bundle": launch.browser,
-            "profile": launch.profile.display().to_string(),
-            "screen": screen_json(&info),
-            })
-            .to_string()
+        }
+    }
+
+    ok_value(json!({
+        "reused": false,
+        "session": crate::agent::session_json(
+            &session,
+            version.get("webSocketDebuggerUrl").cloned(),
+        ),
+        "screen": screen_json(&info),
+    }))
+}
+
+fn agent_stop(request: &Value) -> String {
+    let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
+        return error("missing name");
+    };
+    let reply = on_main_value({
+        let name = name.clone();
+        move || {
+            let stopped = match crate::agent::stop(&name) {
+                Ok(stopped) => stopped,
+                Err(message) => return Err(message),
+            };
+            // Also close a persisted record left by a crash.
+            let record = crate::with_model(|model| {
+                model
+                    .config
+                    .agent_sessions
+                    .iter()
+                    .find(|entry| entry.name == name)
+                    .cloned()
+            });
+            let recovered = record
+                .as_ref()
+                .map(|record| crate::agent::terminate_record(record).unwrap_or(false))
+                .unwrap_or(false);
+            crate::with_model(|model| model.config.forget_agent_session(&name));
+            Ok(stopped || recovered)
+        }
+    });
+    match reply {
+        Ok(Ok(stopped)) => ok_value(json!({ "stopped": stopped })),
+        Ok(Err(message)) => error(message),
+        Err(message) => error(message),
+    }
+}
+
+fn agent_status(request: &Value) -> String {
+    let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
+        return error("missing name");
+    };
+    let reply = on_main_value({
+        let name = name.clone();
+        move || {
+            let session = crate::agent::session(&name);
+            let screen = crate::screens::info(&name);
+            let alive = session
+                .as_ref()
+                .map(crate::agent::session_alive)
+                .unwrap_or(false);
+            (session, screen, alive)
+        }
+    });
+    match reply {
+        Ok((session, screen, alive)) => {
+            let session_json = session
+                .as_ref()
+                .map(|session| crate::agent::session_json(session, None))
+                .unwrap_or(Value::Null);
+            ok_value(json!({
+                "screen": screen.map(|info| screen_json(&info)).unwrap_or(Value::Null),
+                "session": session_json,
+                "alive": alive,
+            }))
         }
         Err(message) => error(message),
     }
