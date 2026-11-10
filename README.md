@@ -118,7 +118,7 @@ pages and reads much higher.
 | state | footprint |
 | --- | --- |
 | launched, settings never opened | 13 MB |
-| settings open | 30 MB |
+| settings open (General / Virtual Displays) | 27-31 MB |
 | settings closed again | 31 MB |
 | idle CPU | 0% |
 
