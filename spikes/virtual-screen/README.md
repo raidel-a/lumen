@@ -83,6 +83,24 @@ All numbers are from this machine, not estimates.
    was already recorded; a first-ever creation could still move something, so the product should
    create screens at login rather than per task.
 
+## Follow-up findings from the implementation
+
+- **Chromium's DevTools endpoint speaks HTTP/1.1 only.** A `GET /json/version` over HTTP/1.0 gets
+  no reply at all, which looked like a slow browser start for a while. The response has
+  `Content-Length` and keeps the connection open, so read by length, not by EOF.
+- **Chromium activates itself when its first window appears**, even with `activates = false` or
+  `open -g`. `--no-startup-window` keeps it in the background, but creating the window later
+  activates it just the same. The app that was frontmost before the launch has to be re-activated
+  afterwards.
+- **Teardown order matters.** Releasing the descriptor, settings or mode array before the display
+  crashes in `-[CGVirtualDisplay dealloc]`. Release only the display and leave the helpers alive.
+- **The run loop must be pumped while the mode is applied.** Sleeping on the main thread after
+  `applySettings:` leaves the display at 0x0 forever; `NSRunLoop::runUntilDate` lets the mode
+  arrive, typically within 200 ms.
+- **The default placement is not pinned.** Excellent: it is the right of the main display, and it
+  can be read from `CGDisplayBounds` without `CGConfigureDisplayOrigin`, which would prevent
+  removal.
+
 ## Not tested
 
 - Sleep and wake. Virtual displays are expected to disappear; recreation is the planned recovery.

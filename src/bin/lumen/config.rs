@@ -66,6 +66,33 @@ pub struct CurrentInput {
     pub protocol: Protocol,
 }
 
+/// A display that exists only in memory, created with `CGVirtualDisplay`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VirtualScreenConfig {
+    pub name: String,
+    pub width: u32,
+    pub height: u32,
+    /// Ask for a 2x backing store. 1x is cheaper and gives the agent more logical space.
+    pub hidpi: bool,
+    pub refresh: f64,
+    /// Recreate this screen at launch and after wake.
+    pub auto_create: bool,
+}
+
+impl Default for VirtualScreenConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            width: 1920,
+            height: 1080,
+            hidpi: false,
+            refresh: 60.0,
+            auto_create: true,
+        }
+    }
+}
+
 /// A display this app released and has not brought back yet. Kept on disk so a crash cannot
 /// leave the output switched off until logout.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -99,6 +126,8 @@ pub struct Config {
     pub show_brightness: bool,
     pub displays: Vec<DisplayConfig>,
     pub released: Vec<ReleasedRecord>,
+    /// Screens that exist only in memory, for the agent workspace and for capture.
+    pub virtual_screens: Vec<VirtualScreenConfig>,
 }
 
 impl Default for Config {
@@ -109,6 +138,7 @@ impl Default for Config {
             show_brightness: true,
             displays: Vec::new(),
             released: Vec::new(),
+            virtual_screens: Vec::new(),
         }
     }
 }
@@ -199,6 +229,30 @@ impl Config {
         if let Some(entry) = self.display_mut(key) {
             entry.inputs = detected.iter().map(InputSetting::from_detected).collect();
         }
+        self.save();
+    }
+
+    /// The socket the menu-bar app listens on for CLI and agent commands.
+    pub fn support_dir() -> PathBuf {
+        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        home.join("Library/Application Support/Lumen")
+    }
+
+    pub fn virtual_screen(&self, name: &str) -> Option<&VirtualScreenConfig> {
+        self.virtual_screens.iter().find(|screen| screen.name == name)
+    }
+
+    /// Adds or updates a screen definition and saves.
+    pub fn upsert_virtual_screen(&mut self, screen: VirtualScreenConfig) {
+        match self.virtual_screens.iter_mut().find(|entry| entry.name == screen.name) {
+            Some(entry) => *entry = screen,
+            None => self.virtual_screens.push(screen),
+        }
+        self.save();
+    }
+
+    pub fn remove_virtual_screen(&mut self, name: &str) {
+        self.virtual_screens.retain(|screen| screen.name != name);
         self.save();
     }
 

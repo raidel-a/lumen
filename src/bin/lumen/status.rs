@@ -232,6 +232,18 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
             menu.addItem(&entry);
         }
 
+        let screens = crate::screens::list();
+        if !screens.is_empty() {
+            menu.addItem(&separator());
+            menu.addItem(&plain_item("Virtual screens", false));
+            for screen in &screens {
+                menu.addItem(&plain_item(
+                    &format!("{} - {}x{}", screen.name, screen.width, screen.height),
+                    false,
+                ));
+            }
+        }
+
         menu.addItem(&separator());
         menu.addItem(&action_item("Settings…", menu::SETTINGS, false, true, actions));
         menu.addItem(&action_item("Refresh", menu::REFRESH, false, true, actions));
