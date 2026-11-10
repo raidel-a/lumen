@@ -46,10 +46,10 @@ number, and signs with a stable code-signing identity. The identity matters: TCC
 - `scripts/release.sh` produces `dist/Lumen-<version>.zip` and `.dmg`; the DMG contains the app and
   an Applications link and is signed with the same identity.
 
-The icon source is `assets/lumen_icon.svg`; `scripts/icon.sh` renders it at 1024 and regenerates
-`assets/lumen_icon_1024.png` and `assets/Lumen.icns`. The render is flattened onto an opaque near-black
-background on purpose: macOS 26 and later puts a transparent legacy `.icns` on a grey plate and scales
-the artwork to about 85% of the tile, while an opaque icon is masked to the full squircle.
+The icon source is `assets/lumen_icon.svg`; `assets/Lumen.icns` is generated from a 1024 px render
+flattened onto an opaque near-black background on purpose. macOS 26 and later puts a transparent
+legacy `.icns` on a grey plate and scales the artwork to about 85% of the tile, while an opaque icon
+is masked to the full squircle.
 
 Notarisation is not wired in. It needs a Developer ID Application certificate and hardened runtime,
 and the private display API means direct distribution only, never the App Store.
