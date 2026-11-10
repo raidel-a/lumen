@@ -202,6 +202,31 @@ pub fn apply_control(display_id: u32, code: u8, value: u16) {
     });
 }
 
+/// Removes a virtual screen and closes the browser started on it. Main thread.
+pub fn remove_screen(name: &str) -> (bool, bool) {
+    let stopped = agent::stop(name).unwrap_or(false);
+    let removed = screens::remove(name);
+    with_model(|model| {
+        model.config.remove_virtual_screen(name);
+        model.config.forget_agent_session(name);
+    });
+    after_change();
+    (removed, stopped)
+}
+
+/// Creates a screen with the given geometry. Main thread.
+pub fn create_screen(name: &str, width: u32, height: u32, hidpi: bool) -> Result<screens::ScreenInfo, String> {
+    let mut config = config::VirtualScreenConfig::default();
+    config.name = name.to_string();
+    config.width = width.clamp(640, 7680);
+    config.height = height.clamp(480, 4320);
+    config.hidpi = hidpi;
+    let info = screens::ensure(&config)?;
+    with_model(|model| model.config.upsert_virtual_screen(config));
+    after_change();
+    Ok(info)
+}
+
 pub fn run_action(action: Action) {
     match action {
         Action::Refresh => spawn_scan(),
@@ -254,6 +279,9 @@ pub fn run_action(action: Action) {
             apply_control(display, lumen::ddc::VCP_CONTRAST, value)
         }
         Action::Volume { display, value } => apply_control(display, lumen::ddc::VCP_VOLUME, value),
+        Action::RemoveScreen { name } => {
+            remove_screen(&name);
+        }
         Action::Preview { name } => {
             if let Some(target) = ui::target() {
                 if let Err(error) = screens::toggle_preview(&name, &target) {

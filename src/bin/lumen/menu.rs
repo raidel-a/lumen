@@ -15,6 +15,7 @@ pub enum Action {
     Release { key: String },
     Reclaim { key: String },
     Preview { name: String },
+    RemoveScreen { name: String },
 }
 
 pub const REFRESH: &str = "refresh";
@@ -37,6 +38,9 @@ pub fn parse(raw: &str) -> Option<Action> {
     }
     if let Some(name) = raw.strip_prefix("preview|") {
         return Some(Action::Preview { name: name.to_string() });
+    }
+    if let Some(name) = raw.strip_prefix("remove-screen|") {
+        return Some(Action::RemoveScreen { name: name.to_string() });
     }
     let mut parts = raw.split(':');
     match parts.next()? {
@@ -83,6 +87,10 @@ pub fn switch_id(display: u32, value: u16, protocol: InputProtocol) -> String {
 
 pub fn preview_id(name: &str) -> String {
     format!("preview|{name}")
+}
+
+pub fn remove_screen_id(name: &str) -> String {
+    format!("remove-screen|{name}")
 }
 
 pub fn release_id(key: &str) -> String {

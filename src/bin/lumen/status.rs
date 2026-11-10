@@ -253,6 +253,13 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
                     &format!("{}x{} at {},{}", screen.width, screen.height, screen.x, screen.y),
                     false,
                 ));
+                submenu.addItem(&action_item(
+                    "Remove screen",
+                    &menu::remove_screen_id(&screen.name),
+                    false,
+                    true,
+                    actions,
+                ));
                 let entry = plain_item(
                     &format!("{} - {}x{}", screen.name, screen.width, screen.height),
                     true,
