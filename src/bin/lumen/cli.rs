@@ -11,6 +11,7 @@ pub fn run(args: &[String]) -> i32 {
         Some("virtual") => virtual_command(&args[1..]),
         Some("agent") => agent_command(&args[1..]),
         Some("settings") => settings_command(&args[1..]),
+        Some("quit") => send(json!({ "cmd": "quit" })),
         _ => {
             help();
             return 2;
@@ -235,6 +236,7 @@ lumen agent move --name <screen> [--left X] [--top Y] [--width W] [--height H]
 lumen agent stop --name <screen>
 lumen agent status --name <screen>
 lumen settings [--page general|displays|virtual|about] [--screen invocation|agent|main|last]
-lumen settings state"
+lumen settings state
+lumen quit"
     );
 }

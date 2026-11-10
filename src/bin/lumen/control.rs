@@ -128,6 +128,12 @@ fn handle(line: &str) -> String {
                 Err(message) => error(message),
             }
         }
+        "quit" => {
+            // Let the reply reach the caller, then quit on the main thread so virtual displays and
+            // agent browsers are released instead of being orphaned.
+            dispatch::Queue::main().exec_async(|| crate::run_action(crate::menu::Action::Quit));
+            ok_value(json!({ "quitting": true }))
+        }
         "settings.state" => match on_main_value(|| crate::ui::state()) {
             Ok(state) => ok_value(state),
             Err(message) => error(message),

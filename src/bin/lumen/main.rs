@@ -537,7 +537,7 @@ fn main() {
     }
     if matches!(
         args.first().map(String::as_str),
-        Some("virtual") | Some("agent") | Some("settings")
+        Some("virtual") | Some("agent") | Some("settings") | Some("quit")
     ) {
         std::process::exit(cli::run(&args));
     }
