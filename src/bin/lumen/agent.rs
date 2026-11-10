@@ -522,9 +522,7 @@ pub fn reconcile(records: &[AgentSessionRecord]) -> usize {
             Ok(true) => stopped += 1,
             Ok(false) => {}
             Err(error) => {
-                if std::env::var_os("LUMEN_TRACE").is_some() {
-                    eprintln!("agent session {} not closed: {error}", record.name);
-                }
+                crate::log::warn(format!("agent session {} not closed: {error}", record.name));
             }
         }
         // Helpers and forwarded instances carry the same profile.

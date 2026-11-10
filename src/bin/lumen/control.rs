@@ -57,9 +57,7 @@ pub fn serve() {
     if path.exists() {
         // A live app already owns the socket; a stale file from a crash can be replaced.
         if instance_running() {
-            if std::env::var_os("LUMEN_TRACE").is_some() {
-                eprintln!("control socket already served by another instance");
-            }
+            crate::log::warn("control socket already served by another instance");
             return;
         }
         let _ = std::fs::remove_file(&path);
@@ -67,7 +65,7 @@ pub fn serve() {
     let listener = match UnixListener::bind(&path) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("control socket: {error}");
+            crate::log::error(format!("control socket: {error}"));
             return;
         }
     };
@@ -118,6 +116,22 @@ fn handle(line: &str) -> String {
     };
     match command {
         "ping" => ok_value(json!({ "pid": std::process::id() })),
+        "settings.open" => {
+            let page = request.get("page").and_then(Value::as_str).map(str::to_string);
+            let screen = request.get("screen").and_then(Value::as_str).map(str::to_string);
+            let result = on_main_value(move || {
+                crate::ui::open_command(page.as_deref(), screen.as_deref())
+            });
+            match result {
+                Ok(Ok(())) => ok_value(json!({ "opened": true })),
+                Ok(Err(message)) => error(message),
+                Err(message) => error(message),
+            }
+        }
+        "settings.state" => match on_main_value(|| crate::ui::state()) {
+            Ok(state) => ok_value(state),
+            Err(message) => error(message),
+        },
         "virtual.list" => match on_main_value(|| crate::screens::list()) {
             Ok(screens) => ok_value(json!({ "screens": screens_json(&screens) })),
             Err(message) => error(message),

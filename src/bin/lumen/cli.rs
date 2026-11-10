@@ -10,6 +10,7 @@ pub fn run(args: &[String]) -> i32 {
     let reply = match args.first().map(String::as_str) {
         Some("virtual") => virtual_command(&args[1..]),
         Some("agent") => agent_command(&args[1..]),
+        Some("settings") => settings_command(&args[1..]),
         _ => {
             help();
             return 2;
@@ -25,6 +26,20 @@ pub fn run(args: &[String]) -> i32 {
     } else {
         1
     }
+}
+
+fn settings_command(args: &[String]) -> Value {
+    if matches!(args.first().map(String::as_str), Some("state")) {
+        return send(json!({ "cmd": "settings.state" }));
+    }
+    let mut request = json!({ "cmd": "settings.open" });
+    if let Some(page) = option(args, "--page") {
+        request["page"] = json!(page);
+    }
+    if let Some(screen) = option(args, "--screen") {
+        request["screen"] = json!(screen);
+    }
+    send(request)
 }
 
 fn option(args: &[String], key: &str) -> Option<String> {
@@ -218,6 +233,8 @@ lumen agent start --name <screen> [--url URL] [--headless|--windowed] [--port N]
 lumen agent screenshot --name <screen> [--out page.png]
 lumen agent move --name <screen> [--left X] [--top Y] [--width W] [--height H]
 lumen agent stop --name <screen>
-lumen agent status --name <screen>"
+lumen agent status --name <screen>
+lumen settings [--page general|displays|virtual|about] [--screen invocation|agent|main|last]
+lumen settings state"
     );
 }

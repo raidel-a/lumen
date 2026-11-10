@@ -6,6 +6,8 @@ mod cli;
 mod config;
 mod control;
 mod engine;
+mod instance;
+mod log;
 mod login;
 mod menu;
 mod model;
@@ -103,9 +105,9 @@ pub fn after_change() {
 
 /// Queues a slider write; a burst of drag events collapses into one DDC write per control.
 pub fn queue_control(display_id: u32, code: u8, value: u16) {
-    if std::env::var_os("LUMEN_TRACE").is_some() {
-        eprintln!("queue_control display={display_id} code={code:#04x} value={value}");
-    }
+    crate::log::trace(format!(
+        "queue_control display={display_id} code={code:#04x} value={value}"
+    ));
     PENDING_CONTROLS.with(|pending| {
         pending.borrow_mut().insert((display_id, code), value);
     });
@@ -148,9 +150,7 @@ pub fn schedule_rescan() {
     });
     dispatch::Queue::main().exec_after(Duration::from_millis(350), move || {
         if RESCAN.with(|cell| cell.get()) == generation {
-            if std::env::var_os("LUMEN_TRACE").is_some() {
-                eprintln!("rescan: display configuration changed");
-            }
+            crate::log::trace("rescan: display configuration changed");
             spawn_scan();
         }
     });
@@ -195,9 +195,7 @@ fn spawn_scan() {
                                         .and_then(serde_json::Value::as_str)
                                         .unwrap_or("agent could not be reopened")
                                         .to_string();
-                                    if std::env::var_os("LUMEN_TRACE").is_some() {
-                                        eprintln!("agent reopen: {message}");
-                                    }
+                                    crate::log::warn(format!("agent reopen: {message}"));
                                     on_main(move || {
                                         with_model(|model| model.message = Some(message));
                                         after_change();
@@ -223,9 +221,7 @@ fn spawn_scan() {
                     if let Err(error) =
                         cdp::place_window(session.port, info.x, info.y, info.width, info.height)
                     {
-                        if std::env::var_os("LUMEN_TRACE").is_some() {
-                            eprintln!("window recovery: {error}");
-                        }
+                        crate::log::trace(format!("window recovery: {error}"));
                     }
                 });
             }
@@ -397,12 +393,13 @@ pub fn rename_screen(old: &str, desired: &config::VirtualScreenConfig) -> Result
 pub fn run_action(action: Action) {
     match action {
         Action::Refresh => spawn_scan(),
-        Action::Settings => ui::open(),
+        Action::Settings => {
+            let point = unsafe { NSEvent::mouseLocation() };
+            ui::open(Some(point), None);
+        }
         Action::Quit => {
             let browsers = agent::stop_all();
-            if std::env::var_os("LUMEN_TRACE").is_some() {
-                eprintln!("stopped agent browsers: {browsers:?}");
-            }
+            crate::log::info(format!("stopped agent browsers: {browsers:?}"));
             with_model(|model| {
                 model.config.agent_sessions.clear();
                 model.config.save();
@@ -523,12 +520,25 @@ pub fn run_action(action: Action) {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // A dev bundle launched through LaunchServices gets its support directory here. Setting the
+    // environment before anything reads it keeps config, socket and agents isolated.
+    if let Some(index) = args.iter().position(|arg| arg == "--support-dir") {
+        if let Some(dir) = args.get(index + 1).cloned() {
+            unsafe {
+                std::env::set_var("LUMEN_SUPPORT_DIR", &dir);
+            }
+        }
+        args.drain(index..(index + 2).min(args.len()));
+    }
     if matches!(args.first().map(String::as_str), Some("--version") | Some("version")) {
         println!("Lumen {}", version_string());
         return;
     }
-    if matches!(args.first().map(String::as_str), Some("virtual") | Some("agent")) {
+    if matches!(
+        args.first().map(String::as_str),
+        Some("virtual") | Some("agent") | Some("settings")
+    ) {
         std::process::exit(cli::run(&args));
     }
 
@@ -557,25 +567,28 @@ fn main() {
         eprintln!("Lumen is already running");
         std::process::exit(0);
     }
+    let _instance = match instance::acquire() {
+        Ok(lock) => lock,
+        Err(error) => {
+            eprintln!("Lumen is already running ({error})");
+            std::process::exit(0);
+        }
+    };
 
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
-    if std::env::var_os("LUMEN_TRACE").is_some() {
-        unsafe {
-            let bundle = objc2_foundation::NSBundle::mainBundle();
-            eprintln!(
-                "bundle id: {:?} path: {:?}",
-                bundle.bundleIdentifier().map(|s| s.to_string()),
-                bundle.bundlePath().to_string()
-            );
-
-        }
+    unsafe {
+        let bundle = objc2_foundation::NSBundle::mainBundle();
+        crate::log::info(format!(
+            "bundle id: {:?} path: {:?} support: {:?}",
+            bundle.bundleIdentifier().map(|s| s.to_string()),
+            bundle.bundlePath().to_string(),
+            config::Config::support_dir()
+        ));
     }
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     unsafe { app.finishLaunching() };
-    if std::env::var_os("LUMEN_TRACE").is_some() {
-        eprintln!("login item at startup: {:?}", login::status());
-    }
+    crate::log::trace(format!("login item at startup: {:?}", login::status()));
 
     with_model(|model| model.config = config::Config::load());
 
@@ -584,9 +597,7 @@ fn main() {
     if !orphans.is_empty() {
         let stopped = agent::reconcile(&orphans);
         with_model(|model| model.config.save());
-        if std::env::var_os("LUMEN_TRACE").is_some() {
-            eprintln!("closed {stopped} agent browser(s) from a previous run");
-        }
+        crate::log::info(format!("closed {stopped} agent browser(s) from a previous run"));
     }
 
     // If a previous run died while a display was released, bring it back before anything else.
@@ -595,9 +606,10 @@ fn main() {
         for record in &stale {
             let _ = lumen::native::set_enabled(record.id, true);
         }
-        if std::env::var_os("LUMEN_TRACE").is_some() {
-            eprintln!("reclaimed {} display(s) from a previous run", stale.len());
-        }
+        crate::log::info(format!(
+            "reclaimed {} display(s) from a previous run",
+            stale.len()
+        ));
         with_model(|model| model.config.save());
     }
 

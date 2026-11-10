@@ -7,7 +7,7 @@
 //! builder walks down a flipped document view and records the height it needs. Controls carry `tag`
 //! values that the `Actions` target uses to find the row they belong to.
 
-use crate::config::{InputSetting, Protocol};
+use crate::config::{InputSetting, Protocol, SettingsDisplay};
 use crate::model::Model;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
@@ -20,10 +20,11 @@ use objc2_app_kit::{
     NSAccessibility, NSForegroundColorAttributeName, NSLineBreakMode,
     NSMenu, NSMenuDelegate,
     NSPasteboard, NSPasteboardTypeString,
-    NSPopUpButton, NSScrollView, NSSlider, NSSwitch, NSTextAlignment, NSTextField, NSTickMarkPosition,
+    NSPopUpButton, NSScreen, NSScrollView, NSSlider, NSSwitch, NSTextAlignment, NSTextField,
+    NSTickMarkPosition,
     NSTitlePosition, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
+    NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject,
@@ -31,8 +32,6 @@ use objc2_foundation::{
 };
 use std::cell::RefCell;
 
-const WIDTH: f64 = 920.0;
-const HEIGHT: f64 = 600.0;
 const MIN_WIDTH: f64 = 880.0;
 const MIN_HEIGHT: f64 = 500.0;
 const SIDEBAR: f64 = 200.0;
@@ -50,6 +49,25 @@ pub enum Page {
 }
 
 impl Page {
+    fn slug(self) -> &'static str {
+        match self {
+            Page::General => "general",
+            Page::Displays => "displays",
+            Page::Virtual => "virtual",
+            Page::About => "about",
+        }
+    }
+
+    fn from_slug(value: &str) -> Option<Self> {
+        match value {
+            "general" => Some(Page::General),
+            "displays" => Some(Page::Displays),
+            "virtual" | "virtual-displays" => Some(Page::Virtual),
+            "about" => Some(Page::About),
+            _ => None,
+        }
+    }
+
     fn from_row(row: isize) -> Self {
         match row {
             1 => Page::Displays,
@@ -823,6 +841,23 @@ unsafe fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
     if let Some(note) = UI.with(|ui| ui.borrow().login_note.clone()) {
         pb.note(&note);
     }
+
+    pb.section("Settings Window");
+    let mut group = pb.group();
+    let index = match model.config.settings_display {
+        SettingsDisplay::Invocation => 0,
+        SettingsDisplay::Agent => 1,
+        SettingsDisplay::Main => 2,
+        SettingsDisplay::Last => 3,
+    };
+    group.popup(
+        "Open on",
+        "Where Settings appears when you choose it from the menu.",
+        &["Display I click from", "Agent", "Main display", "Last display"],
+        index,
+        sel!(settingsDisplay:),
+    );
+    pb.end(group);
 }
 
 unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
@@ -1918,20 +1953,59 @@ pub fn init() -> Retained<Actions> {
     actions
 }
 
-pub fn open() {
+/// Opens Settings. `invocation` is the pointer at the moment the menu action ran; `forced`
+/// overrides the configured placement for scripts and tests.
+pub fn open(invocation: Option<NSPoint>, forced: Option<SettingsDisplay>) {
     let start = std::time::Instant::now();
     if ACTIONS.with(|slot| slot.borrow().is_none()) {
         ACTIONS.with(|slot| *slot.borrow_mut() = Some(make_actions()));
     }
+
+    let (configured, width, height, saved_page) = crate::with_model(|model| {
+        (
+            model.config.settings_display,
+            model.config.settings_width,
+            model.config.settings_height,
+            model.config.settings_page.clone(),
+        )
+    });
+    let choice = forced.unwrap_or(configured);
+    let target = resolve_screen(choice, invocation);
+
     let existing = UI.with(|ui| ui.borrow().window.clone());
+    let fresh = existing.is_none();
     let window = match existing {
         Some(window) => window,
         None => {
-            let window = create_window();
+            let window = create_window(width, height);
             UI.with(|ui| ui.borrow_mut().window = Some(window.clone()));
             window
         }
     };
+    if fresh {
+        if let Some(page) = Page::from_slug(&saved_page) {
+            UI.with(|ui| ui.borrow_mut().page = page);
+        }
+    }
+
+    if let Some(screen) = target {
+        let current = window.screen().map(|screen| unsafe { screen.localizedName().to_string() });
+        let name = unsafe { screen.localizedName().to_string() };
+        if fresh || forced.is_some() || current.as_deref() != Some(name.as_str()) {
+            let size = if fresh {
+                NSSize::new(width, height)
+            } else {
+                window.frame().size
+            };
+            place_window(&window, &screen, size);
+        }
+        crate::with_model(|model| {
+            if model.config.settings_last_screen.as_deref() != Some(name.as_str()) {
+                model.config.settings_last_screen = Some(name.clone());
+                model.config.save();
+            }
+        });
+    }
 
     rebuild_page();
     #[allow(deprecated)]
@@ -1940,9 +2014,197 @@ pub fn open() {
     }
     window.makeKeyAndOrderFront(None);
     let _ = window.makeFirstResponder(None);
-    if std::env::var_os("LUMEN_TRACE").is_some() {
-        eprintln!("settings open: {} ms", start.elapsed().as_millis());
+    crate::log::trace(format!("settings open: {} ms", start.elapsed().as_millis()));
+}
+
+/// Entry point for the control socket. No pointer is available, so `invocation` falls back to
+/// the configured placement.
+pub fn open_command(page: Option<&str>, screen: Option<&str>) -> Result<(), String> {
+    let page = match page {
+        Some(value) => Some(Page::from_slug(value).ok_or_else(|| format!("unknown page: {value}"))?),
+        None => None,
+    };
+    let screen = match screen {
+        Some("invocation") => Some(SettingsDisplay::Invocation),
+        Some("agent") => Some(SettingsDisplay::Agent),
+        Some("main") => Some(SettingsDisplay::Main),
+        Some("last") => Some(SettingsDisplay::Last),
+        Some(value) => return Err(format!("unknown screen: {value}")),
+        None => None,
+    };
+    if let Some(page) = page {
+        UI.with(|ui| ui.borrow_mut().page = page);
+        crate::with_model(|model| {
+            model.config.settings_page = page.slug().to_string();
+            model.config.save();
+        });
     }
+    open(None, screen);
+    Ok(())
+}
+
+/// State for scripts and tests.
+pub fn state() -> serde_json::Value {
+    let (window, page) = UI.with(|ui| {
+        let ui = ui.borrow();
+        (ui.window.clone(), ui.page)
+    });
+    let visible = window.as_ref().map(|window| window.isVisible()).unwrap_or(false);
+    let screen = window
+        .and_then(|window| window.screen())
+        .map(|screen| unsafe { screen.localizedName().to_string() });
+    serde_json::json!({
+        "page": page.slug(),
+        "visible": visible,
+        "screen": screen,
+    })
+}
+
+fn screen_contains(frame: NSRect, point: NSPoint) -> bool {
+    point.x >= frame.origin.x
+        && point.x <= frame.origin.x + frame.size.width
+        && point.y >= frame.origin.y
+        && point.y <= frame.origin.y + frame.size.height
+}
+
+fn all_screens() -> Vec<Retained<NSScreen>> {
+    let array = NSScreen::screens(mtm());
+    (0..array.len())
+        .filter_map(|index| array.get_retained(index))
+        .collect()
+}
+
+fn screen_for_virtual(name: &str) -> Option<Retained<NSScreen>> {
+    // Prefer the display id when this process created the screen. Fall back to the visible name,
+    // which lets a dev build place its window on a screen created by the installed app.
+    if let Some(info) = crate::screens::info(name) {
+        let key = NSString::from_str("NSScreenNumber");
+        for screen in all_screens() {
+            let description = screen.deviceDescription();
+            let Some(value) = (unsafe { description.objectForKey(&key) }) else {
+                continue;
+            };
+            let id: u32 = unsafe { msg_send![&*value, unsignedIntValue] };
+            if id == info.id {
+                return Some(screen);
+            }
+        }
+    }
+    all_screens()
+        .into_iter()
+        .find(|screen| unsafe { screen.localizedName().to_string() } == name)
+}
+
+fn resolve_screen(choice: SettingsDisplay, invocation: Option<NSPoint>) -> Option<Retained<NSScreen>> {
+    let screens = all_screens();
+    let primary = screens.first().cloned();
+    let invoked = invocation.and_then(|point| {
+        screens
+            .iter()
+            .find(|screen| screen_contains(screen.frame(), point))
+            .cloned()
+    });
+    match choice {
+        SettingsDisplay::Invocation => invoked.or(primary),
+        SettingsDisplay::Agent => screen_for_virtual("Agent").or(invoked).or(primary),
+        SettingsDisplay::Main => primary,
+        SettingsDisplay::Last => {
+            let last = crate::with_model(|model| model.config.settings_last_screen.clone());
+            last.and_then(|name| {
+                screens
+                    .iter()
+                    .find(|screen| unsafe { screen.localizedName().to_string() } == name)
+                    .cloned()
+            })
+            .or(invoked)
+            .or(primary)
+        }
+    }
+}
+
+fn fit_size(visible: NSSize, size: NSSize) -> NSSize {
+    NSSize::new(
+        size.width
+            .max(600.0)
+            .min((visible.width - 24.0).max(600.0)),
+        size.height
+            .max(400.0)
+            .min((visible.height - 24.0).max(400.0)),
+    )
+}
+
+fn centered_origin(visible: NSRect, size: NSSize) -> NSPoint {
+    NSPoint::new(
+        visible.origin.x + (visible.size.width - size.width) / 2.0,
+        visible.origin.y + (visible.size.height - size.height) / 2.0,
+    )
+}
+
+/// Centres the window in the target screen's visible frame, clamping to fit.
+fn place_window(window: &NSWindow, screen: &NSScreen, size: NSSize) {
+    let visible = screen.visibleFrame();
+    let fitted = fit_size(visible.size, size);
+    window.setFrame_display(NSRect::new(centered_origin(visible, fitted), fitted), true);
+}
+
+/// Moves the settings window to the main display if its screen disappeared.
+pub fn rescue_windows() {
+    if crate::screens::is_renaming() {
+        return;
+    }
+    let window = UI.with(|ui| ui.borrow().window.clone());
+    let Some(window) = window else {
+        return;
+    };
+    if !window.isVisible() {
+        return;
+    }
+    let current = match window.screen() {
+        Some(screen) => screen,
+        None => {
+            if let Some(primary) = all_screens().first().cloned() {
+                place_window(&window, &primary, window.frame().size);
+            }
+            return;
+        }
+    };
+    let alive = all_screens().iter().any(|screen| {
+        screen_contains(
+            screen.frame(),
+            NSPoint::new(
+                current.frame().origin.x + 1.0,
+                current.frame().origin.y + 1.0,
+            ),
+        )
+    });
+    if !alive {
+        if let Some(primary) = all_screens().first().cloned() {
+            place_window(&window, &primary, window.frame().size);
+        }
+    }
+}
+
+/// Moves an open settings window after the placement preference changes.
+pub fn reposition() {
+    let choice = crate::with_model(|model| model.config.settings_display);
+    if choice == SettingsDisplay::Invocation {
+        return;
+    }
+    let Some(screen) = resolve_screen(choice, None) else {
+        return;
+    };
+    let Some(window) = UI.with(|ui| ui.borrow().window.clone()) else {
+        return;
+    };
+    if !window.isVisible() {
+        return;
+    }
+    place_window(&window, &screen, window.frame().size);
+    let name = unsafe { screen.localizedName().to_string() };
+    crate::with_model(|model| {
+        model.config.settings_last_screen = Some(name);
+        model.config.save();
+    });
 }
 
 fn rebuild_page() {
@@ -1971,11 +2233,17 @@ pub fn rebuild_if_open() {
     rebuild_page();
 }
 
-fn create_window() -> Retained<NSWindow> {
+fn create_window(width: f64, height: f64) -> Retained<NSWindow> {
     unsafe {
         let window = NSWindow::initWithContentRect_styleMask_backing_defer(
             mtm().alloc(),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(WIDTH, HEIGHT)),
+            NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(
+                    width.max(MIN_WIDTH).min(1440.0),
+                    height.max(MIN_HEIGHT).min(1200.0),
+                ),
+            ),
             NSWindowStyleMask::Titled
                 | NSWindowStyleMask::Closable
                 | NSWindowStyleMask::Miniaturizable
@@ -1986,12 +2254,7 @@ fn create_window() -> Retained<NSWindow> {
         window.setTitle(&NSString::from_str("Lumen Settings"));
         window.setReleasedWhenClosed(false);
         window.setContentMinSize(NSSize::new(MIN_WIDTH, MIN_HEIGHT));
-        let name = NSString::from_str("LumenSettings2");
-        let restored = window.setFrameUsingName(&name);
-        window.setFrameAutosaveName(&name);
-        if !restored {
-            window.center();
-        }
+        window.setCollectionBehavior(NSWindowCollectionBehavior::MoveToActiveSpace);
         ACTIONS.with(|slot| {
             if let Some(actions) = slot.borrow().as_ref() {
                 window.setDelegate(Some(ProtocolObject::from_ref(&**actions)));
@@ -2013,47 +2276,41 @@ fn make_actions() -> Retained<Actions> {
 }
 
 
-/// Runs an alert over the settings window, so it appears on the same display. The alert centres
-/// itself when it is shown, so a one-shot timer moves it after layout.
-fn run_alert(alert: &NSAlert) -> isize {
+/// Presents an alert as a sheet on the settings window. The completion runs on the main thread
+/// when the user answers; no modal loop or window moving is involved.
+fn present_alert<F>(alert: Retained<NSAlert>, completion: F)
+where
+    F: FnOnce(bool) + 'static,
+{
     let Some(settings) = UI.with(|ui| ui.borrow().window.clone()) else {
-        return unsafe { alert.runModal() };
+        return;
     };
+    let completion = std::rc::Rc::new(std::cell::RefCell::new(Some(completion)));
+    let keep = alert.clone();
+    let handler = block2::RcBlock::new(move |response: isize| {
+        // Keeping the alert alive keeps its accessory view and controls alive too.
+        let _alert = &keep;
+        let callback = completion.borrow_mut().take();
+        if let Some(callback) = callback {
+            callback(response == NSAlertFirstButtonReturn);
+        }
+    });
     unsafe {
-        alert.layout();
-        let parent = settings.frame();
-        let window = alert.window();
-        let size = window.frame().size;
-        let target = NSPoint::new(
-            parent.origin.x + (parent.size.width - size.width) / 2.0,
-            parent.origin.y + (parent.size.height - size.height) / 2.0,
-        );
-        let place = block2::RcBlock::new(move |_timer: std::ptr::NonNull<objc2_foundation::NSTimer>| {
-            window.setFrameOrigin(target);
-        });
-        let timer = objc2_foundation::NSTimer::timerWithTimeInterval_repeats_block(
-            0.05,
-            false,
-            &place,
-        );
-        objc2_foundation::NSRunLoop::currentRunLoop().addTimer_forMode(
-            &timer,
-            objc2_foundation::NSRunLoopCommonModes,
-        );
-        let response = alert.runModal();
-        timer.invalidate();
-        response
+        alert.beginSheetModalForWindow_completionHandler(&settings, Some(&handler));
     }
 }
 
-fn confirm(message: &str, detail: &str, action: &str) -> bool {
+fn confirm<F>(message: &str, detail: &str, action: &str, completion: F)
+where
+    F: FnOnce(bool) + 'static,
+{
     unsafe {
         let alert = NSAlert::new(mtm());
         alert.setMessageText(&NSString::from_str(message));
         alert.setInformativeText(&NSString::from_str(detail));
         alert.addButtonWithTitle(&NSString::from_str(action));
         alert.addButtonWithTitle(&NSString::from_str("Cancel"));
-        run_alert(&alert) == NSAlertFirstButtonReturn
+        present_alert(alert, completion);
     }
 }
 
@@ -2166,28 +2423,33 @@ declare_class!(
             config.auto_create = auto;
 
             if name != screen.name {
-                let confirmed = confirm(
-                    &format!("Rename {} to {}?", screen.name, name),
+                let old = screen.name.clone();
+                let alert = format!("Rename {} to {}?", screen.name, name);
+                confirm(
+                    &alert,
                     "The display is recreated. Any agent browser on it closes, and its position on the desktop may change.",
                     "Rename",
+                    move |confirmed| {
+                        if !confirmed {
+                            return;
+                        }
+                        match crate::rename_screen(&old, &config) {
+                            Ok(()) => {}
+                            Err(error) => message(&error),
+                        }
+                        crate::after_change();
+                    },
                 );
-                if !confirmed {
-                    return;
+                return;
+            }
+            match crate::screens::ensure(&config) {
+                Ok(_) => {
+                    crate::with_model(|model| {
+                        model.config.upsert_virtual_screen(config);
+                        model.message = Some("Virtual display updated".to_string());
+                    });
                 }
-                match crate::rename_screen(&screen.name, &config) {
-                    Ok(()) => {}
-                    Err(error) => message(&error),
-                }
-            } else {
-                match crate::screens::ensure(&config) {
-                    Ok(_) => {
-                        crate::with_model(|model| {
-                            model.config.upsert_virtual_screen(config);
-                            model.message = Some("Virtual display updated".to_string());
-                        });
-                    }
-                    Err(error) => message(&error),
-                }
+                Err(error) => message(&error),
             }
             crate::after_change();
         }
@@ -2212,14 +2474,18 @@ declare_class!(
             let Some(screen) = crate::screens::list().get(index).cloned() else {
                 return;
             };
-            let confirmed = confirm(
-                &format!("Remove {}?", screen.name),
+            let name = screen.name.clone();
+            let alert = format!("Remove {}?", screen.name);
+            confirm(
+                &alert,
                 "This closes any agent browser on the display and deletes its definition. Captures stay on disk.",
                 "Remove",
+                move |confirmed| {
+                    if confirmed {
+                        crate::remove_screen(&name);
+                    }
+                },
             );
-            if confirmed {
-                crate::remove_screen(&screen.name);
-            }
         }
 
         #[method(newScreen:)]
@@ -2276,7 +2542,7 @@ declare_class!(
                 (accessory, name_field, size_popup)
             };
 
-            unsafe {
+            let alert = unsafe {
                 let alert = NSAlert::new(mtm());
                 alert.setMessageText(&NSString::from_str("New Virtual Display"));
                 alert.setInformativeText(&NSString::from_str(
@@ -2285,32 +2551,36 @@ declare_class!(
                 alert.addButtonWithTitle(&NSString::from_str("Create"));
                 alert.addButtonWithTitle(&NSString::from_str("Cancel"));
                 alert.setAccessoryView(Some(&accessory));
-                if run_alert(&alert) != NSAlertFirstButtonReturn {
+                alert
+            };
+            present_alert(alert, move |confirmed| {
+                if !confirmed {
                     return;
                 }
-            }
-            let name = unsafe { name_field.stringValue().to_string() }.trim().to_string();
-            if let Err(error) = crate::control::valid_name(&name) {
-                message(&error);
+                let name = unsafe { name_field.stringValue().to_string() }.trim().to_string();
+                if let Err(error) = crate::control::valid_name(&name) {
+                    message(&error);
+                    crate::after_change();
+                    return;
+                }
+                if crate::with_model(|model| model.config.virtual_screen(&name).is_some()) {
+                    message(&format!("a virtual screen named {name} already exists"));
+                    crate::after_change();
+                    return;
+                }
+                let (width, height) = presets
+                    [unsafe { size_popup.indexOfSelectedItem() }.max(0) as usize % presets.len()];
+                let mut config = crate::config::VirtualScreenConfig::default();
+                config.name = name;
+                config.width = width;
+                config.height = height;
+                config.hidpi = defaults.hidpi;
+                config.refresh = if defaults.refresh > 0.0 { defaults.refresh } else { 60.0 };
+                if let Err(error) = crate::create_screen_with(config) {
+                    message(&error);
+                }
                 crate::after_change();
-                return;
-            }
-            if crate::with_model(|model| model.config.virtual_screen(&name).is_some()) {
-                message(&format!("a virtual screen named {name} already exists"));
-                crate::after_change();
-                return;
-            }
-            let (width, height) = presets[unsafe { size_popup.indexOfSelectedItem() }.max(0) as usize % presets.len()];
-            let mut config = crate::config::VirtualScreenConfig::default();
-            config.name = name;
-            config.width = width;
-            config.height = height;
-            config.hidpi = defaults.hidpi;
-            config.refresh = if defaults.refresh > 0.0 { defaults.refresh } else { 60.0 };
-            if let Err(error) = crate::create_screen_with(config) {
-                message(&error);
-            }
-            crate::after_change();
+            });
         }
 
         #[method(noop:)]
@@ -2329,21 +2599,22 @@ declare_class!(
                 return;
             };
 
-            let confirmed = confirm(
-                &format!("Test {} on {}?", input.label, name),
-                "Lumen sends a DDC input-select command. If the monitor accepts it, it switches away and this display disappears from the Mac. Some monitors cannot switch back over DDC, so you may need the monitor's own controls to return.",
-                "Test",
-            );
-            if !confirmed {
-                return;
-            }
-
             let code = lumen::ddc::InputCode {
                 label: format!("{} ({})", input.label, input.protocol.label()),
                 value: input.value,
                 protocol: input.protocol.to_ddc(),
             };
-            crate::switch_input(display_id, code, Some(key));
+            let alert = format!("Test {} on {}?", input.label, name);
+            confirm(
+                &alert,
+                "Lumen sends a DDC input-select command. If the monitor accepts it, it switches away and this display disappears from the Mac. Some monitors cannot switch back over DDC, so you may need the monitor's own controls to return.",
+                "Test",
+                move |confirmed| {
+                    if confirmed {
+                        crate::switch_input(display_id, code, Some(key));
+                    }
+                },
+            );
         }
 
         #[method(controlChanged:)]
@@ -2399,6 +2670,9 @@ declare_class!(
 
         #[method(screensChanged:)]
         fn screens_changed(&self, _notification: *mut AnyObject) {
+            rescue_windows();
+            dispatch::Queue::main()
+                .exec_after(std::time::Duration::from_millis(500), rescue_windows);
             crate::schedule_rescan();
         }
 
@@ -2423,12 +2697,30 @@ declare_class!(
                 }
                 _ => crate::login::register(),
             };
-            if std::env::var_os("LUMEN_TRACE").is_some() {
-                eprintln!("login item: before={before:?} result={result:?} after={:?}", crate::login::status());
-            }
+            crate::log::trace(format!(
+                "login item: before={before:?} result={result:?} after={:?}",
+                crate::login::status()
+            ));
             UI.with(|ui| {
                 ui.borrow_mut().login_note = result.err();
             });
+            crate::after_change();
+        }
+
+        #[method(settingsDisplay:)]
+        fn settings_display(&self, sender: *mut AnyObject) {
+            let index: isize = unsafe { msg_send![sender, indexOfSelectedItem] };
+            let choice = match index {
+                1 => SettingsDisplay::Agent,
+                2 => SettingsDisplay::Main,
+                3 => SettingsDisplay::Last,
+                _ => SettingsDisplay::Invocation,
+            };
+            crate::with_model(|model| {
+                model.config.settings_display = choice;
+                model.config.save();
+            });
+            reposition();
             crate::after_change();
         }
 
@@ -2470,7 +2762,12 @@ declare_class!(
         #[method(pageChanged:)]
         fn page_changed(&self, sender: *mut AnyObject) {
             let row = sender_tag(sender);
-            UI.with(|ui| ui.borrow_mut().page = Page::from_row(row));
+            let page = Page::from_row(row);
+            UI.with(|ui| ui.borrow_mut().page = page);
+            crate::with_model(|model| {
+                model.config.settings_page = page.slug().to_string();
+                model.config.save();
+            });
             let window = UI.with(|ui| ui.borrow().window.clone());
             if let Some(window) = window {
                 build_chrome(&window);
@@ -2664,17 +2961,19 @@ declare_class!(
 
         #[method(deleteCaptures:)]
         fn delete_captures(&self, _sender: *mut AnyObject) {
-            let confirmed = confirm(
+            confirm(
                 "Delete captures?",
                 "Removes page and screen screenshots from every folder. Browser profiles are not touched.",
                 "Delete",
+                move |confirmed| {
+                    if !confirmed {
+                        return;
+                    }
+                    let removed = crate::screens::delete_captures();
+                    message(&format!("Deleted {removed} capture(s)"));
+                    crate::after_change();
+                },
             );
-            if !confirmed {
-                return;
-            }
-            let removed = crate::screens::delete_captures();
-            message(&format!("Deleted {removed} capture(s)"));
-            crate::after_change();
         }
 
         #[method(copyDiagnostics:)]
@@ -2685,9 +2984,10 @@ declare_class!(
                 .ok()
                 .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
+            let log = crate::log::snapshot();
             let text = crate::with_model(|model| {
                 format!(
-                    "Lumen {}\nmacOS {}\nDisplays: {}\nVirtual displays: {}\nAgent sessions: {}\nLogin item: {:?}\nConfig: {}\nCaptures: {}",
+                    "Lumen {}\nmacOS {}\nDisplays: {}\nVirtual displays: {}\nAgent sessions: {}\nLogin item: {:?}\nConfig: {}\nCaptures: {}\n\nLog:\n{}",
                     crate::version_string(),
                     os,
                     model.displays.len(),
@@ -2695,7 +2995,8 @@ declare_class!(
                     crate::agent::sessions().len(),
                     crate::login::status(),
                     crate::config::Config::path().display(),
-                    crate::screens::captures_dir().display()
+                    crate::screens::captures_dir().display(),
+                    log
                 )
             });
             unsafe {
@@ -2727,8 +3028,19 @@ declare_class!(
                     return;
                 }
             }
+            let window = UI.with(|ui| ui.borrow_mut().window.take());
+            if let Some(window) = &window {
+                if let Some(content) = window.contentView() {
+                    let size = content.frame().size;
+                    crate::with_model(|model| {
+                        model.config.settings_width = size.width.max(MIN_WIDTH);
+                        model.config.settings_height = size.height.max(MIN_HEIGHT);
+                        model.config.save();
+                    });
+                }
+            }
             STALE.with(|stale| {
-                *stale.borrow_mut() = UI.with(|ui| ui.borrow_mut().window.take());
+                *stale.borrow_mut() = window;
             });
             dispatch::Queue::main().exec_async(|| {
                 STALE.with(|stale| {
@@ -2743,5 +3055,42 @@ fn flip(protocol: Protocol) -> Protocol {
     match protocol {
         Protocol::Standard => Protocol::LgAlt,
         Protocol::LgAlt => Protocol::Standard,
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{centered_origin, fit_size};
+    use objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    #[test]
+    fn fits_and_centres_in_a_normal_screen() {
+        let visible = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(1920.0, 1049.0));
+        let size = fit_size(visible.size, NSSize::new(920.0, 880.0));
+        assert_eq!(size.width, 920.0);
+        assert_eq!(size.height, 880.0);
+        let origin = centered_origin(visible, size);
+        assert_eq!(origin.x, 500.0);
+        assert_eq!(origin.y, 84.5);
+    }
+
+    #[test]
+    fn clamps_to_a_small_screen() {
+        let visible = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(700.0, 600.0));
+        let size = fit_size(visible.size, NSSize::new(1000.0, 800.0));
+        assert_eq!(size.width, 676.0);
+        assert_eq!(size.height, 576.0);
+        let origin = centered_origin(visible, size);
+        assert_eq!(origin.x, 12.0);
+        assert_eq!(origin.y, 12.0);
+    }
+
+    #[test]
+    fn honours_the_origin_of_a_secondary_screen() {
+        let visible = NSRect::new(NSPoint::new(1680.0, -30.0), NSSize::new(1920.0, 1080.0));
+        let size = fit_size(visible.size, NSSize::new(920.0, 880.0));
+        let origin = centered_origin(visible, size);
+        assert_eq!(origin.x, 2180.0);
+        assert_eq!(origin.y, 70.0);
     }
 }

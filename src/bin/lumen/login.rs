@@ -49,9 +49,7 @@ pub fn status() -> Status {
         return Status::Unavailable;
     };
     let raw: isize = unsafe { msg_send![&*service, status] };
-    if std::env::var_os("LUMEN_TRACE").is_some() {
-        eprintln!("login status raw={raw}");
-    }
+    crate::log::trace(format!("login status raw={raw}"));
     match raw {
         0 => Status::NotRegistered,
         1 => Status::Enabled,
