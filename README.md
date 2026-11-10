@@ -15,6 +15,9 @@ LG ULTRAWIDE
   Contrast   ──────●── 70%
   Volume     ───────●─ 85%
   Mute
+Built-in Display
+  Controls
+  Brightness ──────●── 54%
 Settings…
 Refresh
 Quit Lumen
@@ -99,6 +102,10 @@ and the private display API means direct distribution only, never the App Store.
   behind the M1 HDMI bridge), reads and writes VCP features over I2C, and parses capabilities
   strings for advertised input codes.
 - **Signal control** (`src/native`): `CGSConfigureDisplayEnabled`, resolved with `dlsym`.
+- **Built-in brightness** (`src/bin/lumen/brightness.rs`): the private
+  `DisplayServices.framework` (`DisplayServicesGetBrightness`, `SetBrightness`,
+  `CanChangeBrightness`), resolved with `dlopen`/`dlsym` so the app still starts when the framework
+  or a symbol is missing. Only the internal panel uses it.
 - **Virtual screens** (`src/bin/lumen/screens.rs`): `CGVirtualDisplay`, a private CoreGraphics API
   declared by name and driven with `msg_send`, because there is no public way to create a display.
   A screen is a real display in the Window Server with no physical output; the menu lists it and
@@ -133,6 +140,19 @@ with the page.
 
 If every VCP read fails, the Displays page shows which read failed and asks you to wake the
 monitor and refresh, instead of just showing an empty controls group.
+
+## Built-in display
+
+The internal panel has no DDC path, so Lumen lists it separately as **Built-in Display** (config key
+`builtin`) and drives its backlight through the private DisplayServices framework. It exposes
+brightness only: no contrast, volume, mute, input switching or release, and the Settings page omits
+the input editor. The menu entry keeps the same brightness slider and tick points as external
+displays.
+
+The current value is re-read from the system each time the menu opens and each time Settings
+rebuilds, so a change made with the keyboard or Control Center shows up without a polling timer.
+If DisplayServices is unavailable, the entry still appears with a note explaining that brightness
+cannot be read or set, rather than disappearing.
 
 Each input row has a **Test** button. It asks for confirmation first, then sends that input's
 command (with the protocol fallbacks) and records whether the display actually left: a ✓ or ✗

@@ -354,7 +354,11 @@ impl Config {
                         entry.name = display.name.clone();
                         changed = true;
                     }
-                    if entry.inputs.is_empty() {
+                    // The internal panel has no inputs; syncing would otherwise save on every scan.
+                    if !display.builtin
+                        && entry.inputs.is_empty()
+                        && !display.inputs.is_empty()
+                    {
                         entry.inputs = display.inputs.iter().map(InputSetting::from_detected).collect();
                         changed = true;
                     }
@@ -364,7 +368,11 @@ impl Config {
                         key: display.key.clone(),
                         name: display.name.clone(),
                         show_in_menu: true,
-                        inputs: display.inputs.iter().map(InputSetting::from_detected).collect(),
+                        inputs: if display.builtin {
+                            Vec::new()
+                        } else {
+                            display.inputs.iter().map(InputSetting::from_detected).collect()
+                        },
                         current_input: None,
                     });
                     changed = true;
