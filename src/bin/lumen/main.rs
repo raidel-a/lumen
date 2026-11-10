@@ -232,6 +232,13 @@ pub fn run_action(action: Action) {
             apply_control(display, lumen::ddc::VCP_CONTRAST, value)
         }
         Action::Volume { display, value } => apply_control(display, lumen::ddc::VCP_VOLUME, value),
+        Action::Preview { name } => {
+            if let Some(target) = ui::target() {
+                if let Err(error) = screens::toggle_preview(&name, &target) {
+                    with_model(|model| model.message = Some(error));
+                }
+            }
+        }
         Action::Mute { display, muted } => {
             apply_control(display, engine::VCP_MUTE, if muted { 1 } else { 2 })
         }

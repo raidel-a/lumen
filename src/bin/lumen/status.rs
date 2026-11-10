@@ -236,11 +236,29 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
         if !screens.is_empty() {
             menu.addItem(&separator());
             menu.addItem(&plain_item("Virtual screens", false));
+            let previewing = crate::screens::preview_name();
             for screen in &screens {
-                menu.addItem(&plain_item(
-                    &format!("{} - {}x{}", screen.name, screen.width, screen.height),
+                let submenu = NSMenu::new(mtm());
+                submenu.setAutoenablesItems(false);
+                let shown = previewing.as_deref() == Some(screen.name.as_str());
+                submenu.addItem(&action_item(
+                    if shown { "Hide preview" } else { "Show preview" },
+                    &menu::preview_id(&screen.name),
+                    shown,
+                    true,
+                    actions,
+                ));
+                submenu.addItem(&separator());
+                submenu.addItem(&plain_item(
+                    &format!("{}x{} at {},{}", screen.width, screen.height, screen.x, screen.y),
                     false,
                 ));
+                let entry = plain_item(
+                    &format!("{} - {}x{}", screen.name, screen.width, screen.height),
+                    true,
+                );
+                entry.setSubmenu(Some(&submenu));
+                menu.addItem(&entry);
             }
         }
 

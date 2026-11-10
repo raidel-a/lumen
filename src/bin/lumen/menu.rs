@@ -14,6 +14,7 @@ pub enum Action {
     Mute { display: u32, muted: bool },
     Release { key: String },
     Reclaim { key: String },
+    Preview { name: String },
 }
 
 pub const REFRESH: &str = "refresh";
@@ -33,6 +34,9 @@ pub fn parse(raw: &str) -> Option<Action> {
     }
     if let Some(key) = raw.strip_prefix("reclaim|") {
         return Some(Action::Reclaim { key: key.to_string() });
+    }
+    if let Some(name) = raw.strip_prefix("preview|") {
+        return Some(Action::Preview { name: name.to_string() });
     }
     let mut parts = raw.split(':');
     match parts.next()? {
@@ -75,6 +79,10 @@ pub fn switch_id(display: u32, value: u16, protocol: InputProtocol) -> String {
         InputProtocol::LgAlt => "lg",
     };
     format!("switch:{display}:{value}:{protocol}")
+}
+
+pub fn preview_id(name: &str) -> String {
+    format!("preview|{name}")
 }
 
 pub fn release_id(key: &str) -> String {
