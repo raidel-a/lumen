@@ -16,10 +16,11 @@ mod screens;
 use config::Protocol;
 use menu::Action;
 use model::Model;
+use objc2::msg_send;
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventModifierFlags,
 };
-use objc2_foundation::MainThreadMarker;
+use objc2_foundation::{MainThreadMarker, NSString};
 use std::cell::RefCell;
 use std::time::Duration;
 
@@ -34,6 +35,29 @@ thread_local! {
 }
 
 /// Runs `job` on the main thread on the next run-loop turn.
+/// Marketing version and build number from the app bundle, or "dev" outside one.
+pub fn version_string() -> String {
+    unsafe {
+        let bundle = objc2_foundation::NSBundle::mainBundle();
+        let Some(info) = bundle.infoDictionary() else {
+            return "dev".to_string();
+        };
+        let read = |key: &str| -> Option<String> {
+            let value = info.objectForKey(&NSString::from_str(key))?;
+            let text: *const std::ffi::c_char = msg_send![&*value, UTF8String];
+            if text.is_null() {
+                return None;
+            }
+            Some(std::ffi::CStr::from_ptr(text).to_string_lossy().into_owned())
+        };
+        let short = read("CFBundleShortVersionString").unwrap_or_else(|| "dev".to_string());
+        match read("CFBundleVersion") {
+            Some(build) if !build.is_empty() => format!("{short} ({build})"),
+            _ => short,
+        }
+    }
+}
+
 pub(crate) fn on_main(job: impl FnOnce() + Send + 'static) {
     dispatch::Queue::main().exec_async(job);
 }
@@ -357,6 +381,10 @@ pub fn run_action(action: Action) {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if matches!(args.first().map(String::as_str), Some("--version") | Some("version")) {
+        println!("Lumen {}", version_string());
+        return;
+    }
     if matches!(args.first().map(String::as_str), Some("virtual") | Some("agent")) {
         std::process::exit(cli::run(&args));
     }

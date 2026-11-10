@@ -3,3 +3,4 @@
 /.spike
 .DS_Store
 /spikes/*/target
+/.build

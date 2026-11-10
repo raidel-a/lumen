@@ -23,13 +23,34 @@ Quit Lumen
 ## Building
 
 ```sh
-cargo build --release          # seconds, ~1 MB binary
+cargo build --release          # seconds, ~1.8 MB binary
 cargo run --bin lumen          # status item appears immediately
-./scripts/bundle.sh            # builds dist/Lumen.app (LSUIElement, no Dock icon)
+./scripts/bundle.sh            # builds and signs dist/Lumen.app
+./scripts/release.sh           # zip and DMG in dist/
 open dist/Lumen.app
 ```
 
-Requires macOS 14+ on Apple silicon. No accessibility, screen recording, or root permissions.
+Requires macOS 27 on Apple silicon. No accessibility or root permissions; Screen Recording is only
+asked for when you capture or preview a display.
+
+## Packaging
+
+`scripts/bundle.sh` builds the app bundle, embeds `assets/Lumen.icns`, writes the version and build
+number, and signs with a stable code-signing identity. The identity matters: TCC grants and the
+`SMAppService` login item are keyed to the signature, and ad-hoc signing changes it on every build.
+
+- `LUMEN_SIGN_IDENTITY` selects the identity; otherwise the first code-signing identity in the
+  keychain is used, and ad-hoc is the fallback with a warning.
+- `LUMEN_VERSION` (default `0.1.0`) and `LUMEN_BUILD` (default: git commit count) feed the plist.
+  `lumen --version` and Settings > About show them.
+- `scripts/release.sh` produces `dist/Lumen-<version>.zip` and `.dmg`; the DMG contains the app and
+  an Applications link and is signed with the same identity.
+
+The icon source is `assets/lumen_icon.svg`; `assets/Lumen.icns` is generated from a 1024 px render
+(system grid: 824 px rounded square, centred on a transparent 1024 canvas).
+
+Notarisation is not wired in. It needs a Developer ID Application certificate and hardened runtime,
+and the private display API means direct distribution only, never the App Store.
 
 ## How the app is put together
 

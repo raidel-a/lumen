@@ -406,6 +406,13 @@ fn build_general(parent: &NSView, model: &Model, theme: &Theme) {
                 NSSize::new(about.size.width - 32.0, 36.0),
             ),
         ));
+        parent.addSubview(&label(
+            &format!("Lumen {}", crate::version_string()),
+            11.0,
+            NSFontWeightRegular,
+            &theme.secondary,
+            frame(PAD, 488.0, WIDTH - PAD * 2.0, 16.0),
+        ));
     }
 }
 
