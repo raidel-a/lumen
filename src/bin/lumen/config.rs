@@ -117,6 +117,51 @@ pub struct ReleasedRecord {
     pub name: String,
 }
 
+/// Defaults applied when a virtual display is created from the settings window.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VirtualDefaults {
+    pub width: u32,
+    pub height: u32,
+    pub hidpi: bool,
+    pub refresh: f64,
+}
+
+impl Default for VirtualDefaults {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            hidpi: false,
+            refresh: 60.0,
+        }
+    }
+}
+
+/// The most recent agent start, remembered so it can be restored at launch.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentLaunchRecord {
+    pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub headless: bool,
+    #[serde(default = "default_port")]
+    pub port: u16,
+}
+
+fn default_port() -> u16 {
+    9222
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_capture_limit() -> Option<u32> {
+    Some(20)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DisplayConfig {
     /// `vendor:model:serial`, or `name:<product name>` when the EDID gives nothing better.
@@ -145,6 +190,23 @@ pub struct Config {
     pub virtual_screens: Vec<VirtualScreenConfig>,
     /// Agent browsers this app started, so they can be closed on quit or after a crash.
     pub agent_sessions: Vec<AgentSessionRecord>,
+    /// Virtual displays created from settings start from these values.
+    pub virtual_defaults: VirtualDefaults,
+    /// Start agent browsers without a window unless a request says otherwise.
+    #[serde(default = "default_true")]
+    pub agent_headless: bool,
+    /// Opened when an agent starts without an explicit URL.
+    #[serde(default)]
+    pub agent_url: Option<String>,
+    /// Start the last agent session again when Lumen launches.
+    #[serde(default)]
+    pub agent_reopen: bool,
+    /// Parameters of the last successful agent start, kept across quits.
+    #[serde(default)]
+    pub last_agent: Option<AgentLaunchRecord>,
+    /// How many captures to keep per folder; `None` keeps everything.
+    #[serde(default = "default_capture_limit")]
+    pub capture_limit: Option<u32>,
 }
 
 impl Default for Config {
@@ -157,6 +219,12 @@ impl Default for Config {
             released: Vec::new(),
             virtual_screens: Vec::new(),
             agent_sessions: Vec::new(),
+            virtual_defaults: VirtualDefaults::default(),
+            agent_headless: true,
+            agent_url: None,
+            agent_reopen: false,
+            last_agent: None,
+            capture_limit: Some(20),
         }
     }
 }
@@ -271,6 +339,15 @@ impl Config {
 
     pub fn remove_virtual_screen(&mut self, name: &str) {
         self.virtual_screens.retain(|screen| screen.name != name);
+        self.save();
+    }
+
+    /// Replaces a screen definition in place, keeping its position in the list.
+    pub fn rename_virtual_screen(&mut self, old: &str, screen: VirtualScreenConfig) {
+        match self.virtual_screens.iter_mut().find(|entry| entry.name == old) {
+            Some(entry) => *entry = screen,
+            None => self.virtual_screens.push(screen),
+        }
         self.save();
     }
 

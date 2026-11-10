@@ -61,11 +61,11 @@ and the private display API means direct distribution only, never the App Store.
   custom item views holding real `NSSlider`s, so brightness, contrast and volume can be dragged
   right in the menu. Sliders sit in the display's own menu rather than a nested submenu, because
   a second-level submenu opens off-screen when the status item is near the right edge.
-- **Settings window** (`src/bin/lumen/ui.rs`): plain AppKit views built with `objc2`, laid out with
-  frames in a fixed 720x540 content area. One target class handles every control; `tag` values
-  say which input row a button belongs to. The window is built on first open, rebuilt in place
-  after structural changes, and released on close (the delegate drops it after the close
-  notification), so a closed window costs nothing while the menu keeps working.
+- **Settings window** (`src/bin/lumen/ui.rs`): a source list on the left (General, Displays,
+  Virtual Displays, About) and scrolling grouped pages on the right, 920 pt wide and resizable.
+  One target class handles every control; `tag` values say which input row or screen a button
+  belongs to. Pages rebuild in place after model changes, while unsaved text edits are carried
+  across rescans. Closing releases the window and its views.
 - **DDC engine** (`src/ddc`): own IOKit/CoreDisplay bindings. Finds the display's `IOAVService`
   by matching the port node in the IORegistry path, picks the chip address (`0x37`, or `0xB7`
   behind the M1 HDMI bridge), reads and writes VCP features over I2C, and parses capabilities
@@ -81,10 +81,11 @@ and the private display API means direct distribution only, never the App Store.
   socket rather than creating anything themselves.
 - **`src/bin/probe.rs`**: `cargo run --bin lumen-probe -- list` for debugging a display.
 
-Settings persist to `~/Library/Application Support/Lumen/config.json`: behaviour switches plus
-each display's menu input list (label, VCP value, standard vs LG-alt addressing, enabled).
-Released displays are also recorded there, so a crash cannot leave an output switched off: the
-next launch reclaims them before doing anything else.
+Settings persist to `~/Library/Application Support/Lumen/config.json`: behaviour switches, each
+display's menu input list (label, VCP value, standard vs LG-alt addressing, enabled), virtual
+display defaults, agent defaults (headless, home page, reopen), the last agent launch and the
+capture limit. Released displays are also recorded there, so a crash cannot leave an output
+switched off: the next launch reclaims them before doing anything else.
 
 Launch at login uses `SMAppService` (macOS 13+). It accepts the ad-hoc signed bundle and shows up
 under System Settings > General > Login Items; the switch reflects the live registration status,
@@ -99,8 +100,8 @@ magnetically towards five points - 0, 25, 50, 75 and 100 percent - when within 3
 those values are easy to repeat while anything in between is still reachable. Holding Option
 bypasses the pull for exact values. Drags are coalesced into one DDC write every 150 ms and update
 the readout immediately. The editor marks the input the display
-reports as active (VCP 0x60) or the one this app last switched to, and the settings window grows
-or shrinks to fit the input list.
+reports as active (VCP 0x60) or the one this app last switched to, and the input list scrolls
+with the page.
 
 Each input row has a **Test** button. It asks for confirmation first, then sends that input's
 command (with the protocol fallbacks) and records whether the display actually left: a ✓ or ✗
@@ -117,8 +118,8 @@ pages and reads much higher.
 | state | footprint |
 | --- | --- |
 | launched, settings never opened | 13 MB |
-| settings open | 27 MB |
-| settings closed again | 26 MB |
+| settings open | 30 MB |
+| settings closed again | 31 MB |
 | idle CPU | 0% |
 
 The launch state is a status item and nothing else. Opening settings brings AppKit's window
@@ -164,6 +165,7 @@ lumen virtual bounds --name Agent            # geometry after any rearrangement
 lumen virtual screenshot --name Agent --out frame.png
 lumen virtual preview --name Agent            # floating live window, --hide to close
 lumen virtual reboot --name Agent             # drop and recreate, for testing recovery
+lumen virtual rename --name Agent --to Workspace
 lumen virtual remove --name Agent
 ```
 
@@ -171,10 +173,18 @@ Screens are persisted in `config.json` with `auto_create`, so they are recreated
 after wake. The default is 1920x1080 at 1x, placed to the right of the main display; the origin is
 read back from `CGDisplayBounds`, never pinned (pinning keeps the display registered until the
 process exits and breaks removal). At most four virtual screens can exist, sizes are limited to
-640x480 through 7680x4320, and screenshots are pruned to the newest 20 per screen.
+640x480 through 7680x4320, and captures are pruned per screen using the limit in Settings
+(default: newest 20).
 
-Settings has a Screens tab: geometry, 1x/2x, refresh, auto-create, preview, apply and remove. Each
-screen's menu entry also has preview and remove actions.
+Settings > Virtual Displays edits the name, geometry, 1x/2x, refresh and auto-create of each
+screen, with preview, apply and remove. Renaming recreates the display because its name is fixed
+at creation: the agent browser on it is closed, its capture folder moves, and its desktop
+position may change. A rename guard keeps a display rescan from restoring the old name halfway
+through. Each screen's menu entry also has preview and remove actions.
+
+The same page holds the agent workspace defaults (start headless, home page, reopen the last
+session at launch) and capture retention (keep the last 5, 20, 50 or all, open or delete the
+folder).
 
 ### Handing a screen to an agent
 
@@ -183,7 +193,8 @@ lumen agent chrome --name Agent --url https://example.com
 ```
 
 ```sh
-lumen agent start --name Agent --headless --url https://example.com
+lumen agent start --name Agent --url https://example.com      # headless by default
+lumen agent start --name Agent --windowed                     # show a window on the screen
 lumen agent screenshot --name Agent --out page.png
 lumen agent status --name Agent              # session, window bounds, whether it is on screen
 lumen agent move --name Agent --left 100 --top 100
@@ -196,10 +207,10 @@ screen. The agent then connects with Playwright's `chromium.connectOverCDP(endpo
 synthetic input is used, so the cursor never moves. Starting again reuses a live session instead
 of launching a second browser.
 
-`--headless` uses Chromium's `--headless=new`: CDP works, no window is created, and the app is
-never activated, so the focus flash disappears entirely. Nothing is visible on the virtual screen
-in that mode, so use `agent screenshot` to see it. `agent screenshot` captures the page over CDP,
-with no Screen Recording permission, in either mode.
+Agent sessions are headless by default: Chromium's `--headless=new` works over CDP, creates no
+window, and never activates the app, so there is no focus flash. Nothing is visible on the
+virtual screen in that mode, so use `agent screenshot`, which captures the page over CDP with no
+Screen Recording permission. `--windowed` opts into a visible window on the virtual display.
 
 Sessions are tracked by pid and mirrored to `config.json`. `agent stop`, `virtual remove` and
 quitting Lumen close the browser after checking that the pid still runs the recorded profile, so a

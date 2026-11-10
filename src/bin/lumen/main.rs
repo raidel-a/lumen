@@ -32,6 +32,8 @@ thread_local! {
     static PENDING_CONTROLS: RefCell<std::collections::HashMap<(u32, u8), u16>> =
         RefCell::new(std::collections::HashMap::new());
     static CONTROL_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The remembered agent session is reopened once, after the first display restore.
+    static REOPEN_DONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Runs `job` on the main thread on the next run-loop turn.
@@ -165,6 +167,48 @@ fn spawn_scan() {
             screens::restore(&config);
             after_change();
 
+            // Bring the last agent back once, on the first restore, if asked.
+            if !REOPEN_DONE.with(|cell| cell.replace(true)) {
+                let launch = with_model(|model| {
+                    if model.config.agent_reopen {
+                        model.config.last_agent.clone()
+                    } else {
+                        None
+                    }
+                });
+                if let Some(launch) = launch {
+                    if screens::info(&launch.name).is_some() {
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(600));
+                            let request = serde_json::json!({
+                                "cmd": "agent.start",
+                                "name": launch.name,
+                                "url": launch.url,
+                                "headless": launch.headless,
+                                "port": launch.port,
+                            });
+                            let reply = control::agent_start(&request);
+                            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&reply) {
+                                if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+                                    let message = value
+                                        .get("error")
+                                        .and_then(serde_json::Value::as_str)
+                                        .unwrap_or("agent could not be reopened")
+                                        .to_string();
+                                    if std::env::var_os("LUMEN_TRACE").is_some() {
+                                        eprintln!("agent reopen: {message}");
+                                    }
+                                    on_main(move || {
+                                        with_model(|model| model.message = Some(message));
+                                        after_change();
+                                    });
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+
             // A display that comes back after wake can leave the agent window on another
             // screen. Move it home once the arrangement has settled.
             for session in agent::sessions() {
@@ -240,15 +284,114 @@ pub fn remove_screen(name: &str) -> (bool, bool) {
 
 /// Creates a screen with the given geometry. Main thread.
 pub fn create_screen(name: &str, width: u32, height: u32, hidpi: bool) -> Result<screens::ScreenInfo, String> {
+    let defaults = with_model(|model| model.config.virtual_defaults.clone());
     let mut config = config::VirtualScreenConfig::default();
     config.name = name.to_string();
     config.width = width.clamp(640, 7680);
     config.height = height.clamp(480, 4320);
     config.hidpi = hidpi;
+    config.refresh = if defaults.refresh > 0.0 { defaults.refresh } else { 60.0 };
+    create_screen_with(config)
+}
+
+/// Creates a screen from a complete configuration and records it. Main thread.
+pub fn create_screen_with(config: config::VirtualScreenConfig) -> Result<screens::ScreenInfo, String> {
     let info = screens::ensure(&config)?;
     with_model(|model| model.config.upsert_virtual_screen(config));
     after_change();
     Ok(info)
+}
+
+/// Renames a live virtual display. The display is recreated because `CGVirtualDisplay` takes its
+/// name at creation, and any agent browser on it is closed first. On failure the old display is
+/// recreated and the error says so.
+pub fn rename_screen(old: &str, desired: &config::VirtualScreenConfig) -> Result<(), String> {
+    let new = desired.name.trim();
+    if old == new {
+        return Ok(());
+    }
+    control::valid_name(new)?;
+    let old_config = with_model(|model| model.config.virtual_screen(old).cloned())
+        .ok_or_else(|| format!("no virtual screen named {old}"))?;
+    if with_model(|model| model.config.virtual_screen(new).is_some()) {
+        return Err(format!("a virtual screen named {new} already exists"));
+    }
+
+    struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            screens::set_renaming(false);
+        }
+    }
+    screens::set_renaming(true);
+    let _guard = Guard;
+
+    if screens::preview_name().as_deref() == Some(old) {
+        screens::stop_preview();
+    }
+    let _ = agent::stop(old);
+    agent::stop_profile(old);
+    with_model(|model| model.config.forget_agent_session(old));
+    // Give a terminating browser a moment to let go of its profile before the folder moves.
+    for _ in 0..20 {
+        if agent::profile_pids(old).is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let old_dir = agent::profile_dir(old)
+        .parent()
+        .map(std::path::PathBuf::from);
+    let new_dir = agent::profile_dir(new)
+        .parent()
+        .map(std::path::PathBuf::from);
+    let mut moved = false;
+    if let (Some(old_dir), Some(new_dir)) = (&old_dir, &new_dir) {
+        if old_dir.exists() {
+            if new_dir.exists() {
+                return Err(format!("a capture folder named {new} already exists"));
+            }
+            if let Some(parent) = new_dir.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            std::fs::rename(old_dir, new_dir)
+                .map_err(|error| format!("could not move the capture folder: {error}"))?;
+            moved = true;
+        }
+    }
+
+    screens::remove_and_wait(old);
+    let mut config = desired.clone();
+    config.name = new.to_string();
+    match screens::ensure(&config) {
+        Ok(_) => {
+            with_model(|model| {
+                model.config.rename_virtual_screen(old, config);
+                model.message = Some(format!("Renamed {old} to {new}"));
+            });
+            after_change();
+            Ok(())
+        }
+        Err(error) => {
+            if moved {
+                if let (Some(old_dir), Some(new_dir)) = (&old_dir, &new_dir) {
+                    let _ = std::fs::rename(new_dir, old_dir);
+                }
+            }
+            let restored = screens::ensure(&old_config);
+            with_model(|model| {
+                model.config.rename_virtual_screen(new, old_config);
+            });
+            after_change();
+            match restored {
+                Ok(_) => Err(format!("rename failed: {error}; the old display was restored")),
+                Err(restore_error) => Err(format!(
+                    "rename failed: {error}; restoring the old display also failed: {restore_error}"
+                )),
+            }
+        }
+    }
 }
 
 pub fn run_action(action: Action) {

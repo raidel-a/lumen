@@ -172,6 +172,32 @@ fn handle(line: &str) -> String {
                 }
             }
         }
+        "virtual.rename" => {
+            let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
+                return error("missing name");
+            };
+            let Some(to) = request.get("to").and_then(Value::as_str).map(str::to_string) else {
+                return error("missing to");
+            };
+            if let Err(message) = valid_name(&to) {
+                return error(message);
+            }
+            let desired = on_main_value({
+                let name = name.clone();
+                move || crate::with_model(|model| model.config.virtual_screen(&name).cloned())
+            });
+            let mut desired = match desired {
+                Ok(Some(config)) => config,
+                Ok(None) => return error("no such virtual screen"),
+                Err(message) => return error(message),
+            };
+            desired.name = to.clone();
+            match on_main_value(move || crate::rename_screen(&name, &desired)) {
+                Ok(Ok(())) => ok_value(json!({ "renamed": to })),
+                Ok(Err(message)) => error(message),
+                Err(message) => error(message),
+            }
+        }
         "virtual.reboot" => {
             let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
                 return error("missing name");
@@ -200,7 +226,7 @@ fn handle(line: &str) -> String {
     }
 }
 
-fn valid_name(name: &str) -> Result<(), String> {
+pub(crate) fn valid_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty() {
         return Err("a screen needs a name".to_string());
     }
@@ -294,7 +320,7 @@ fn remove(name: &str) -> String {
     }
 }
 
-fn agent_start(request: &Value) -> String {
+pub(crate) fn agent_start(request: &Value) -> String {
     let Some(name) = request.get("name").and_then(Value::as_str).map(str::to_string) else {
         return error("missing name");
     };
@@ -307,20 +333,28 @@ fn agent_start(request: &Value) -> String {
         .and_then(Value::as_u64)
         .unwrap_or(crate::agent::DEFAULT_PORT as u64) as u16;
     let browser = request.get("browser").and_then(Value::as_str).map(str::to_string);
-    let headless = request.get("headless").and_then(Value::as_bool).unwrap_or(false);
+    let (default_headless, default_url) = on_main_value(|| {
+        crate::with_model(|model| (model.config.agent_headless, model.config.agent_url.clone()))
+    })
+    .unwrap_or((true, None));
+    let headless = request
+        .get("headless")
+        .and_then(Value::as_bool)
+        .unwrap_or(default_headless);
+    let url = url.or(default_url);
 
     // Reuse a live session instead of launching a second browser on the same profile.
     let existing = on_main_value({
         let name = name.clone();
         move || crate::agent::session(&name)
     });
-    let mut reused = false;
+    let mut reused_session = None;
     if let Ok(Some(session)) = existing {
         if session.headless == headless
             && crate::agent::session_alive(&session)
             && crate::agent::endpoint_alive(session.port)
         {
-            reused = true;
+            reused_session = Some(session);
         } else {
             // Stale or mismatched session: close it and everything left on its profile before
             // launching again, otherwise the new browser forwards and its pid exits at once.
@@ -332,8 +366,7 @@ fn agent_start(request: &Value) -> String {
             crate::agent::stop_profile(&name);
         }
     }
-    if reused {
-        let session = crate::agent::session(&name).unwrap();
+    if let Some(session) = reused_session {
         let version = crate::agent::wait_for_cdp(session.port, Duration::from_millis(500))
             .unwrap_or(Value::Null);
         let endpoint = version.get("webSocketDebuggerUrl").cloned();
@@ -387,18 +420,31 @@ fn agent_start(request: &Value) -> String {
 
     // A forwarded launch exits immediately and leaves the real browser on the profile.
     if !crate::agent::pid_alive(pid) {
-        if let Some(actual) = crate::agent::profile_pids(&name).first() {
-            pid = *actual;
+        if let Some(actual) = crate::agent::profile_pids(&name)
+            .into_iter()
+            .find(|pid| crate::agent::pid_alive(*pid))
+        {
+            pid = actual;
         }
     }
 
     let session = crate::agent::new_session(&name, &launch, pid, url.clone(), headless);
     let record = crate::agent::session_record(&session);
+    let remembered = crate::config::AgentLaunchRecord {
+        name: name.clone(),
+        url: url.clone(),
+        headless,
+        port: launch.port,
+    };
     let registered = on_main_value({
         let session = session.clone();
         move || {
             crate::agent::register(session.clone());
-            crate::with_model(|model| model.config.record_agent_session(record));
+            crate::with_model(|model| {
+                model.config.record_agent_session(record);
+                model.config.last_agent = Some(remembered);
+                model.config.save();
+            });
         }
     });
     if let Err(message) = registered {
@@ -551,7 +597,12 @@ fn agent_screenshot(request: &Value) -> String {
         }
     };
     match crate::cdp::screenshot(session.port, &path) {
-        Ok(()) => ok_value(json!({ "path": path.display().to_string() })),
+        Ok(()) => {
+            let limit = on_main_value(|| crate::with_model(|model| model.config.capture_limit))
+                .unwrap_or(Some(20));
+            crate::screens::prune_captures(path.parent(), limit);
+            ok_value(json!({ "path": path.display().to_string() }))
+        }
         Err(message) => error(message),
     }
 }

@@ -81,6 +81,8 @@ impl Drop for Screen {
 
 thread_local! {
     static SCREENS: RefCell<Vec<Screen>> = const { RefCell::new(Vec::new()) };
+    /// A rename removes and recreates a display; a rescan must not restore the old name meanwhile.
+    static RENAMING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static PREVIEW: RefCell<Option<Preview>> = const { RefCell::new(None) };
 }
 
@@ -309,7 +311,14 @@ pub fn ensure(config: &VirtualScreenConfig) -> Result<ScreenInfo, String> {
 }
 
 /// Recreates every auto-create screen after launch, wake or a display change.
+pub fn set_renaming(active: bool) {
+    RENAMING.with(|flag| flag.set(active));
+}
+
 pub fn restore(config: &Config) {
+    if RENAMING.with(|flag| flag.get()) {
+        return;
+    }
     prune();
     for screen in &config.virtual_screens {
         if !screen.auto_create {
@@ -380,6 +389,17 @@ pub fn remove(name: &str) -> bool {
         screens.remove(index);
         true
     })
+}
+
+/// Removes a screen and waits for the Window Server to let go of its id, so a display with a
+/// new name can be created immediately afterwards.
+pub fn remove_and_wait(name: &str) -> bool {
+    let id = info(name).map(|screen| screen.id);
+    let removed = remove(name);
+    if let Some(id) = id {
+        wait_until_gone(id);
+    }
+    removed
 }
 
 /// Opens a live preview of a screen, at most one at a time.
@@ -581,13 +601,22 @@ pub fn screenshot(name: &str, path: Option<&Path>) -> Result<PathBuf, String> {
     let written = write_png(image, &path);
     unsafe { CGImageRelease(image) };
     written?;
-    prune_screenshots(path.parent());
+    let limit = crate::with_model(|model| model.config.capture_limit);
+    prune_captures(path.parent(), limit);
     Ok(path)
 }
 
-/// Keeps the newest 20 screenshots in a folder; captures are diagnostics, not an archive.
-fn prune_screenshots(directory: Option<&Path>) {
+/// Captures live under `agents/<name>`. Counts are per folder.
+pub fn captures_dir() -> std::path::PathBuf {
+    Config::support_dir().join("agents")
+}
+
+/// Keeps the newest `limit` screenshots in a folder; captures are diagnostics, not an archive.
+pub fn prune_captures(directory: Option<&Path>, limit: Option<u32>) {
     let Some(directory) = directory else {
+        return;
+    };
+    let Some(limit) = limit else {
         return;
     };
     let Ok(entries) = std::fs::read_dir(directory) else {
@@ -601,14 +630,41 @@ fn prune_screenshots(directory: Option<&Path>) {
             Some((modified, path))
         })
         .collect();
-    if files.len() <= 20 {
+    if files.len() <= limit as usize {
         return;
     }
     files.sort_by_key(|(modified, _)| *modified);
-    let excess = files.len() - 20;
+    let excess = files.len() - limit as usize;
     for (_, path) in files.into_iter().take(excess) {
         let _ = std::fs::remove_file(path);
     }
+}
+
+/// Removes page and screen captures, leaving browser profiles untouched.
+pub fn delete_captures() -> usize {
+    let mut removed = 0;
+    let Ok(entries) = std::fs::read_dir(captures_dir()) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(files) = std::fs::read_dir(entry.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let path = file.path();
+            let name = path.file_name().and_then(|name| name.to_str()).unwrap_or("");
+            if !(name.starts_with("page-") || name.starts_with("screen-")) {
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("png") {
+                continue;
+            }
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 #[cfg(test)]

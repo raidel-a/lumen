@@ -527,6 +527,8 @@ pub fn reconcile(records: &[AgentSessionRecord]) -> usize {
                 }
             }
         }
+        // Helpers and forwarded instances carry the same profile.
+        stop_profile(&record.name);
     }
     stopped
 }
