@@ -8,7 +8,7 @@
                 <stop offset="0.52" stop-color="#07133f" stop-opacity="1"/>
                 <stop offset="1" stop-color="#090d2c" stop-opacity="1"/>
             </linearGradient>
-            <path id="Path" fill="url(#linearGradient1)" stroke="none" d="M 215.517624 3 L 807.482361 3 C 925.128723 3 1020.5 98.371277 1020.5 216.017639 L 1020.5 807.982361 C 1020.5 925.628723 925.128723 1021 807.482361 1021 L 215.517624 1021 C 97.871246 1021 2.5 925.628723 2.5 807.982361 L 2.5 216.017639 C 2.5 98.371277 97.871246 3 215.517624 3 Z"/>
+            <path id="Path" fill="url(#linearGradient1)" stroke="none" visibility="hidden" d="M 215.517624 3 L 807.482361 3 C 925.128723 3 1020.5 98.371277 1020.5 216.017639 L 1020.5 807.982361 C 1020.5 925.628723 925.128723 1021 807.482361 1021 L 215.517624 1021 C 97.871246 1021 2.5 925.628723 2.5 807.982361 L 2.5 216.017639 C 2.5 98.371277 97.871246 3 215.517624 3 Z"/>
             <linearGradient id="linearGradient2" x1="2.5" y1="3" x2="918.7" y2="1021" gradientUnits="userSpaceOnUse">
                 <stop offset="1e-05" stop-color="#286bff" stop-opacity="1"/>
                 <stop offset="0.55" stop-color="#173bd4" stop-opacity="1"/>
