@@ -16,13 +16,27 @@ app="$root/dist/Lumen.app"
 version="${LUMEN_VERSION:-0.1.0}"
 build="${LUMEN_BUILD:-$(git -C "$root" rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 identity="${LUMEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)}"
+minimum="27.0"
+icon_build="$root/.build/icon-build"
 
 cargo build --release --bin lumen --manifest-path "$root/Cargo.toml"
+
+# Compile the Icon Composer document into Assets.car (layered, Liquid Glass) plus a fallback icns.
+# actool wants the document named after the icon it is asked for.
+rm -rf "$icon_build"
+mkdir -p "$icon_build/catalog" "$icon_build/out"
+cp -R "$root/assets/lumen.icon" "$icon_build/AppIcon.icon"
+xcrun actool "$icon_build/catalog" "$icon_build/AppIcon.icon" \
+  --compile "$icon_build/out" \
+  --platform macosx \
+  --minimum-deployment-target "$minimum" \
+  --app-icon AppIcon \
+  --output-partial-info-plist "$icon_build/partial.plist" >/dev/null
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$root/target/release/lumen" "$app/Contents/MacOS/lumen"
-cp "$root/assets/Lumen.icns" "$app/Contents/Resources/Lumen.icns"
+cp "$icon_build/out/AppIcon.icns" "$icon_build/out/Assets.car" "$app/Contents/Resources/"
 
 cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -33,11 +47,12 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Lumen</string>
   <key>CFBundleIdentifier</key><string>pro.lumen.Lumen</string>
   <key>CFBundleExecutable</key><string>lumen</string>
-  <key>CFBundleIconFile</key><string>Lumen</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>CFBundleIconName</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>${version}</string>
   <key>CFBundleVersion</key><string>${build}</string>
-  <key>LSMinimumSystemVersion</key><string>27.0</string>
+  <key>LSMinimumSystemVersion</key><string>${minimum}</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
