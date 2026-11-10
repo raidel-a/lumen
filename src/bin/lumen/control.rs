@@ -392,6 +392,7 @@ pub(crate) fn agent_start(request: &Value) -> String {
         }
     }
     if let Some(session) = reused_session {
+        crate::agent::set_phase(&name, Some(crate::agent::Phase::Running));
         let version = crate::agent::wait_for_cdp(session.port, Duration::from_millis(500))
             .unwrap_or(Value::Null);
         let endpoint = version.get("webSocketDebuggerUrl").cloned();
@@ -400,6 +401,8 @@ pub(crate) fn agent_start(request: &Value) -> String {
             "session": crate::agent::session_json(&session, endpoint),
         }));
     }
+
+    let guard = crate::agent::StartGuard::new(&name);
 
     // Wait for any old browser to release the profile and the port.
     let started = Instant::now();
@@ -494,6 +497,7 @@ pub(crate) fn agent_start(request: &Value) -> String {
         }
     }
 
+    guard.finish();
     ok_value(json!({
         "reused": false,
         "session": crate::agent::session_json(

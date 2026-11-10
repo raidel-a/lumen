@@ -920,12 +920,19 @@ unsafe fn agent_session_row(theme: &Theme, session: &crate::agent::Session, inde
     let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
     auto_layout(&row);
     let alive = crate::agent::session_alive(session);
+    let phase = crate::agent::phase(&session.name);
     let mode = if session.headless { "headless" } else { "windowed" };
-    let detail = if alive {
+    let mut detail = if alive {
         format!("{mode} · pid {} · port {}", session.pid, session.port)
     } else {
         format!("{mode} · stopped")
     };
+    match phase {
+        Some(crate::agent::Phase::Starting) => detail.push_str(" · starting…"),
+        Some(crate::agent::Phase::Stopping) => detail.push_str(" · stopping…"),
+        Some(crate::agent::Phase::Failed) => detail.push_str(" · failed"),
+        _ => {}
+    }
     let bar = hstack();
     bar.setSpacing(8.0);
     let shot = button("Screenshot", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(agentShot:));
@@ -938,9 +945,34 @@ unsafe fn agent_session_row(theme: &Theme, session: &crate::agent::Session, inde
     fix_width(&stop, 60.0);
     fix_height(&stop, 24.0);
     tag(&stop, index as isize);
+    if matches!(phase, Some(crate::agent::Phase::Starting | crate::agent::Phase::Stopping)) {
+        shot.setEnabled(false);
+        stop.setEnabled(false);
+    }
     bar.addArrangedSubview(&shot);
     bar.addArrangedSubview(&stop);
     finish_row(&row, theme, &session.name, &detail, &bar, Some(156.0));
+    row
+}
+
+unsafe fn agent_phase_row(theme: &Theme, name: &str, phase: crate::agent::Phase) -> Retained<NSView> {
+    let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&row);
+    fix_height(&row, 44.0);
+    let title = auto_label(name, 13.0, NSFontWeightMedium, &theme.text);
+    let detail = match phase {
+        crate::agent::Phase::Starting => "starting…",
+        crate::agent::Phase::Stopping => "stopping…",
+        crate::agent::Phase::Failed => "last start failed",
+        crate::agent::Phase::Running => "running",
+    };
+    let detail = auto_label(detail, 11.0, NSFontWeightRegular, &theme.secondary);
+    row.addSubview(&title);
+    row.addSubview(&detail);
+    title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    title.topAnchor().constraintEqualToAnchor_constant(&row.topAnchor(), 6.0).setActive(true);
+    detail.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+    detail.topAnchor().constraintEqualToAnchor_constant(&title.bottomAnchor(), 2.0).setActive(true);
     row
 }
 
@@ -1130,6 +1162,13 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
     for (index, session) in sessions.iter().enumerate() {
         agent_rows.push(agent_session_row(theme, session, index));
         UI.with(|ui| ui.borrow_mut().agent_session_names.push(session.name.clone()));
+    }
+    for (name, phase) in crate::agent::phases() {
+        if phase != crate::agent::Phase::Running
+            && screens.iter().any(|screen| screen.name == name)
+        {
+            agent_rows.push(agent_phase_row(theme, &name, phase));
+        }
     }
     if screens.is_empty() {
         let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
