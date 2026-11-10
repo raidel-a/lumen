@@ -103,6 +103,9 @@ pub struct AgentSessionRecord {
     pub profile: String,
     #[serde(default)]
     pub url: Option<String>,
+    /// Headless sessions have no window and are never re-homed.
+    #[serde(default)]
+    pub headless: bool,
 }
 
 /// A display this app released and has not brought back yet. Kept on disk so a crash cannot
