@@ -35,7 +35,7 @@ asked for when you capture or preview a display.
 
 ## Packaging
 
-`scripts/bundle.sh` builds the app bundle, embeds `assets/Lumen.icns`, writes the version and build
+`scripts/bundle.sh` builds the app bundle, compiles `assets/lumen.icon`, writes the version and build
 number, and signs with a stable code-signing identity. The identity matters: TCC grants and the
 `SMAppService` login item are keyed to the signature, and ad-hoc signing changes it on every build.
 
@@ -46,10 +46,9 @@ number, and signs with a stable code-signing identity. The identity matters: TCC
 - `scripts/release.sh` produces `dist/Lumen-<version>.zip` and `.dmg`; the DMG contains the app and
   an Applications link and is signed with the same identity.
 
-The icon source is `assets/lumen_icon.svg`; `assets/Lumen.icns` is generated from a 1024 px render
-flattened onto an opaque near-black background on purpose. macOS 26 and later puts a transparent
-legacy `.icns` on a grey plate and scales the artwork to about 85% of the tile, while an opaque icon
-is masked to the full squircle.
+The icon source is `assets/lumen.icon`, an Icon Composer document. The bundle script compiles it with
+`actool` into `Assets.car` (layered, including the Liquid Glass appearance) and a fallback
+`AppIcon.icns`, then sets `CFBundleIconName`. `assets/lumen_icon.svg` is the exported artwork.
 
 Notarisation is not wired in. It needs a Developer ID Application certificate and hardened runtime,
 and the private display API means direct distribution only, never the App Store.
