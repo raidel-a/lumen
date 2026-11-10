@@ -18,6 +18,7 @@ core-foundation = "0.10"
 core-foundation-sys = "0.8"
 core-graphics = "0.24"
 dispatch = "0.2"
+block2 = "0.5"
 objc2 = "0.5.3"
 objc2-app-kit = { version = "0.2.2", features = ["all"] }
 objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSGeometry", "NSString", "NSValue"] }

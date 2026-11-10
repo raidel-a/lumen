@@ -185,6 +185,15 @@ pub fn run_action(action: Action) {
         Action::Refresh => spawn_scan(),
         Action::Settings => ui::open(),
         Action::Quit => {
+            let browsers = agent::stop_all();
+            if std::env::var_os("LUMEN_TRACE").is_some() {
+                eprintln!("stopped agent browsers: {browsers:?}");
+            }
+            with_model(|model| {
+                model.config.agent_sessions.clear();
+                model.config.save();
+            });
+            control::shutdown();
             let reclaim = with_model(|model| {
                 if model.config.reclaim_on_quit {
                     for released in model.released.drain(..) {
@@ -315,6 +324,12 @@ fn main() {
         }
     }
 
+    // Last, so the CLI subcommands and login flags still work while the app is running.
+    if control::instance_running() {
+        eprintln!("Lumen is already running");
+        std::process::exit(0);
+    }
+
     let mtm = unsafe { MainThreadMarker::new_unchecked() };
     if std::env::var_os("LUMEN_TRACE").is_some() {
         unsafe {
@@ -335,6 +350,16 @@ fn main() {
     }
 
     with_model(|model| model.config = config::Config::load());
+
+    // Agent browsers outlive a crash otherwise, on whatever display they drifted to.
+    let orphans = with_model(|model| std::mem::take(&mut model.config.agent_sessions));
+    if !orphans.is_empty() {
+        let stopped = agent::reconcile(&orphans);
+        with_model(|model| model.config.save());
+        if std::env::var_os("LUMEN_TRACE").is_some() {
+            eprintln!("closed {stopped} agent browser(s) from a previous run");
+        }
+    }
 
     // If a previous run died while a display was released, bring it back before anything else.
     let stale = with_model(|model| std::mem::take(&mut model.config.released));

@@ -24,6 +24,9 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+/// Hard ceiling, so a bad loop cannot flood the Window Server.
+pub const MAX_SCREENS: usize = 4;
+
 #[derive(Clone, Debug)]
 pub struct ScreenInfo {
     pub name: String,
@@ -379,7 +382,34 @@ pub fn screenshot(name: &str, path: Option<&Path>) -> Result<PathBuf, String> {
     let written = write_png(image, &path);
     unsafe { CGImageRelease(image) };
     written?;
+    prune_screenshots(path.parent());
     Ok(path)
+}
+
+/// Keeps the newest 20 screenshots in a folder; captures are diagnostics, not an archive.
+fn prune_screenshots(directory: Option<&Path>) {
+    let Some(directory) = directory else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, path))
+        })
+        .collect();
+    if files.len() <= 20 {
+        return;
+    }
+    files.sort_by_key(|(modified, _)| *modified);
+    let excess = files.len() - 20;
+    for (_, path) in files.into_iter().take(excess) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[cfg(test)]

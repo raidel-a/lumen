@@ -93,6 +93,18 @@ impl Default for VirtualScreenConfig {
     }
 }
 
+/// A browser this app started on a virtual screen. Persisted so a crash cannot leave it running
+/// on a real display after the screen is gone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AgentSessionRecord {
+    pub name: String,
+    pub pid: i32,
+    pub browser: String,
+    pub profile: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
 /// A display this app released and has not brought back yet. Kept on disk so a crash cannot
 /// leave the output switched off until logout.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -128,6 +140,8 @@ pub struct Config {
     pub released: Vec<ReleasedRecord>,
     /// Screens that exist only in memory, for the agent workspace and for capture.
     pub virtual_screens: Vec<VirtualScreenConfig>,
+    /// Agent browsers this app started, so they can be closed on quit or after a crash.
+    pub agent_sessions: Vec<AgentSessionRecord>,
 }
 
 impl Default for Config {
@@ -139,6 +153,7 @@ impl Default for Config {
             displays: Vec::new(),
             released: Vec::new(),
             virtual_screens: Vec::new(),
+            agent_sessions: Vec::new(),
         }
     }
 }
@@ -253,6 +268,17 @@ impl Config {
 
     pub fn remove_virtual_screen(&mut self, name: &str) {
         self.virtual_screens.retain(|screen| screen.name != name);
+        self.save();
+    }
+
+    pub fn record_agent_session(&mut self, record: AgentSessionRecord) {
+        self.agent_sessions.retain(|entry| entry.name != record.name);
+        self.agent_sessions.push(record);
+        self.save();
+    }
+
+    pub fn forget_agent_session(&mut self, name: &str) {
+        self.agent_sessions.retain(|entry| entry.name != name);
         self.save();
     }
 

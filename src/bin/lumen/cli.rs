@@ -99,11 +99,11 @@ fn agent_command(args: &[String]) -> Value {
         return json!({ "ok": false, "error": "agent needs a subcommand" });
     };
     match command {
-        "chrome" => {
+        "start" | "chrome" => {
             let Some(name) = option(args, "--name") else {
                 return json!({ "ok": false, "error": "--name is required" });
             };
-            let mut request = json!({ "cmd": "agent.chrome", "name": name });
+            let mut request = json!({ "cmd": "agent.start", "name": name });
             if let Some(url) = option(args, "--url") {
                 request["url"] = json!(url);
             }
@@ -114,6 +114,18 @@ fn agent_command(args: &[String]) -> Value {
                 request["browser"] = json!(browser);
             }
             send(request)
+        }
+        "stop" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            send(json!({ "cmd": "agent.stop", "name": name }))
+        }
+        "status" => {
+            let Some(name) = option(args, "--name") else {
+                return json!({ "ok": false, "error": "--name is required" });
+            };
+            send(json!({ "cmd": "agent.status", "name": name }))
         }
         other => json!({ "ok": false, "error": format!("unknown agent subcommand {other}") }),
     }
@@ -149,6 +161,8 @@ lumen virtual ensure --name <name> [--width N] [--height N] [--hidpi] [--refresh
 lumen virtual bounds --name <name>
 lumen virtual screenshot --name <name> [--out path.png]
 lumen virtual remove --name <name>
-lumen agent chrome --name <screen> [--url URL] [--port N] [--browser bundle-id]"
+lumen agent start --name <screen> [--url URL] [--port N] [--browser bundle-id|path.app]
+lumen agent stop --name <screen>
+lumen agent status --name <screen>"
     );
 }
