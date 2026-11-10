@@ -1,5 +1,7 @@
 //! Display operations. Everything here touches hardware, so it runs on worker threads.
 
+use crate::brightness;
+use core_graphics::display::CGDisplay;
 use lumen::ddc::{
     DataAddress, Display, InputCode, InputProtocol, VCP_BRIGHTNESS, VCP_CONTRAST,
     VCP_INPUT_SOURCE, VCP_VOLUME,
@@ -14,6 +16,8 @@ pub struct DisplayEntry {
     /// Stable identity used by the config file.
     pub key: String,
     pub name: String,
+    /// The internal panel: no DDC path, brightness through DisplayServices, no inputs.
+    pub builtin: bool,
     pub inputs: Vec<InputCode>,
     pub brightness: Option<(u16, u16)>,
     pub contrast: Option<(u16, u16)>,
@@ -25,7 +29,7 @@ pub struct DisplayEntry {
     pub ddc_error: Option<String>,
 }
 
-/// Reads every DDC display and its advertised inputs.
+/// Reads every DDC display and its advertised inputs, plus the internal panel.
 pub fn scan() -> Vec<DisplayEntry> {
     let mut displays = Vec::new();
     for mut display in Display::enumerate() {
@@ -65,6 +69,7 @@ pub fn scan() -> Vec<DisplayEntry> {
             id: display.id,
             key: display.identity_key(),
             name: display.name.clone(),
+            builtin: false,
             inputs,
             brightness,
             contrast,
@@ -74,7 +79,46 @@ pub fn scan() -> Vec<DisplayEntry> {
             ddc_error,
         });
     }
+    scan_builtin(&mut displays);
     displays
+}
+
+/// Adds the internal panel. It has no DDC path; DisplayServices drives the backlight, and there is
+/// no contrast, volume, input or release. The key is fixed because there is one internal panel and
+/// its CoreGraphics id can change across reboots.
+fn scan_builtin(displays: &mut Vec<DisplayEntry>) {
+    let Ok(ids) = CGDisplay::active_displays() else {
+        return;
+    };
+    for id in ids {
+        if !CGDisplay::new(id).is_builtin() {
+            continue;
+        }
+        if displays.iter().any(|display| display.id == id) {
+            continue;
+        }
+        let brightness = brightness::get_percent(id);
+        let ddc_error = if brightness.is_some() {
+            None
+        } else if brightness::available() {
+            Some("DisplayServices did not return a brightness value".to_string())
+        } else {
+            Some("the DisplayServices API is unavailable".to_string())
+        };
+        displays.push(DisplayEntry {
+            id,
+            key: "builtin".to_string(),
+            name: "Built-in Display".to_string(),
+            builtin: true,
+            inputs: Vec::new(),
+            brightness: brightness.map(|value| (value, 100)),
+            contrast: None,
+            volume: None,
+            muted: None,
+            current_input: None,
+            ddc_error,
+        });
+    }
 }
 
 pub struct SwitchOutcome {
@@ -131,6 +175,9 @@ pub fn switch(display_id: u32, input: &InputCode) -> SwitchOutcome {
 
 /// Stops driving the display so the monitor can follow another input.
 pub fn release(display_id: u32, name: &str) -> String {
+    if CGDisplay::new(display_id).is_builtin() {
+        return format!("{name}: the built-in display has no other input");
+    }
     if !lumen::native::set_enabled(display_id, false) {
         return format!("{name}: could not release the output");
     }
@@ -167,6 +214,9 @@ pub fn write_vcp(display_id: u32, code: u8, value: u16) -> String {
 
 /// The same write without building a user-facing message, for slider streams.
 pub fn write_vcp_quiet(display_id: u32, code: u8, value: u16) -> Result<(), String> {
+    if code == VCP_BRIGHTNESS && CGDisplay::new(display_id).is_builtin() {
+        return brightness::set_percent(display_id, value);
+    }
     let Some(mut display) = Display::find(display_id) else {
         return Err("display is not connected".into());
     };

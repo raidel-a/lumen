@@ -1,6 +1,7 @@
 //! Lumen: native menu bar, AppKit settings window.
 
 mod agent;
+mod brightness;
 mod cdp;
 mod cli;
 mod config;
@@ -96,6 +97,28 @@ pub fn snap_control(raw: f64, max: u16, fine: bool) -> u16 {
     } else {
         value.round() as u16
     }
+}
+
+/// Re-reads the internal panel's backlight, so a change made with the keyboard or Control Center
+/// is visible the next time the menu or Settings opens. There is no polling timer.
+pub fn refresh_builtin_brightness() {
+    let ids: Vec<u32> = with_model(|model| {
+        model.displays.iter().filter(|display| display.builtin).map(|display| display.id).collect()
+    });
+    let values: Vec<(u32, u16)> = ids
+        .into_iter()
+        .filter_map(|id| brightness::get_percent(id).map(|value| (id, value)))
+        .collect();
+    if values.is_empty() {
+        return;
+    }
+    with_model(|model| {
+        for (id, value) in values {
+            if let Some(display) = model.displays.iter_mut().find(|display| display.id == id) {
+                display.brightness = Some((value, 100));
+            }
+        }
+    });
 }
 
 /// Refreshes the settings window after a model change; the menu rebuilds itself when it opens.

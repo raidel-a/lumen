@@ -192,6 +192,7 @@ fn slider_item(
 }
 
 pub fn fill(menu: &NSMenu, actions: &Actions) {
+    crate::refresh_builtin_brightness();
     let model: Model = crate::with_model(|model| model.snapshot());
     LABELS.with(|labels| labels.borrow_mut().clear());
 
@@ -201,7 +202,7 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
         let headline = match &model.message {
             Some(message) => message.clone(),
             None if model.displays.is_empty() && model.released.is_empty() => {
-                "No DDC displays connected".to_string()
+                "No displays connected".to_string()
             }
             None => "Lumen".to_string(),
         };
@@ -277,7 +278,8 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
 }
 
 fn fill_display(submenu: &NSMenu, model: &Model, display: &DisplayEntry, actions: &Actions) {
-        if lumen::native::is_supported() {
+        // The internal panel has no DDC inputs and cannot be released to another source.
+        if !display.builtin && lumen::native::is_supported() {
             submenu.addItem(&action_item(
                 "Release to other input (auto-switch)",
                 &menu::release_id(&display.key),
@@ -288,19 +290,21 @@ fn fill_display(submenu: &NSMenu, model: &Model, display: &DisplayEntry, actions
             submenu.addItem(&separator());
         }
 
-        let inputs = model.config.enabled_inputs(&display.key);
-        if inputs.is_empty() {
-            submenu.addItem(&plain_item("No inputs enabled", false));
-        } else {
-            submenu.addItem(&plain_item("Switch input (DDC, if supported)", false));
-            for input in inputs {
-                let current = model.is_current(display, input.value, input.protocol);
-                submenu.addItem(&input_item(
-                    &format!("{} ({})", input.label, input.protocol.label()),
-                    &menu::switch_id(display.id, input.value, input.protocol.to_ddc()),
-                    current,
-                    actions,
-                ));
+        if !display.builtin {
+            let inputs = model.config.enabled_inputs(&display.key);
+            if inputs.is_empty() {
+                submenu.addItem(&plain_item("No inputs enabled", false));
+            } else {
+                submenu.addItem(&plain_item("Switch input (DDC, if supported)", false));
+                for input in inputs {
+                    let current = model.is_current(display, input.value, input.protocol);
+                    submenu.addItem(&input_item(
+                        &format!("{} ({})", input.label, input.protocol.label()),
+                        &menu::switch_id(display.id, input.value, input.protocol.to_ddc()),
+                        current,
+                        actions,
+                    ));
+                }
             }
         }
 
@@ -320,7 +324,9 @@ fn fill_display(submenu: &NSMenu, model: &Model, display: &DisplayEntry, actions
         }
 
         if !controls.is_empty() {
-            submenu.addItem(&separator());
+            if !display.builtin {
+                submenu.addItem(&separator());
+            }
             submenu.addItem(&plain_item("Controls", false));
             for (code, title, value, max) in &controls {
                 submenu.addItem(&slider_item(display, *code, title, *value, *max, actions));

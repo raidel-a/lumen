@@ -1267,11 +1267,11 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
         let heading = section_heading("Displays", theme);
         stack.addArrangedSubview(&heading);
         stack.setCustomSpacing_afterView(8.0, &heading);
-        let title = auto_label("No DDC displays", 15.0, NSFontWeightSemibold, &theme.text);
+        let title = auto_label("No displays", 15.0, NSFontWeightSemibold, &theme.text);
         stack.addArrangedSubview(&title);
         stack.setCustomSpacing_afterView(6.0, &title);
         let body = paragraph_row(
-            "Lumen talks to monitors over DDC/CI. Connect one, or wake it, then scan again. A released display stays off until it is reclaimed.",
+            "Lumen talks to monitors over DDC/CI and to the built-in panel through DisplayServices. Connect a monitor, or wake it, then scan again. A released display stays off until it is reclaimed.",
             12.0,
             &theme.secondary,
             bounds.size.width - MARGIN * 2.0,
@@ -1301,8 +1301,7 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
         );
         UI.with(|ui| ui.borrow_mut().display_list = Some(display_table.clone()));
         host.addSubview(&display_scroll);
-        display_table.reloadData();
-        select_row(&display_table, selected);
+        reload_and_select(&display_table, selected);
         let line = NSBox::initWithFrame(
             mtm().alloc(),
             NSRect::new(NSPoint::new(list_width, 0.0), NSSize::new(1.0, bounds.size.height)),
@@ -1340,8 +1339,15 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     auto_layout(&header);
     fix_height(&header, 52.0);
     let name = auto_label(&display.name, 17.0, NSFontWeightSemibold, &theme.text);
+    let state = if released {
+        "released"
+    } else if display.builtin {
+        "internal panel"
+    } else {
+        "connected"
+    };
     let status = mono(
-        &format!("{key}  ·  {}", if released { "released" } else { "connected" }),
+        &format!("{key}  ·  {state}"),
         11.0,
         &theme.secondary,
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
@@ -1358,8 +1364,15 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     stack.setCustomSpacing_afterView(20.0, &header);
 
     if let Some(error) = &display.ddc_error {
+        let text = if display.builtin {
+            format!("Brightness is unavailable: {error}.")
+        } else {
+            format!(
+                "DDC reads failed: {error}. Wake the monitor and choose Refresh from the menu to retry."
+            )
+        };
         let note = paragraph_row(
-            &format!("DDC reads failed: {error}. Wake the monitor and choose Refresh from the menu to retry."),
+            &text,
             11.0,
             &theme.secondary,
             host.bounds().size.width - list_width - 1.0 - MARGIN * 2.0,
@@ -1374,7 +1387,11 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     let menu = group_container(theme, vec![row_toggle(
         theme,
         "Show in menu",
-        "List this display and its inputs in the menu bar menu.",
+        if display.builtin {
+            "List the built-in display and its brightness in the menu bar menu."
+        } else {
+            "List this display and its inputs in the menu bar menu."
+        },
         show_in_menu,
         sel!(toggleShowInMenu:),
     )]);
@@ -1411,7 +1428,12 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
         let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
         auto_layout(&row);
         fix_height(&row, 36.0);
-        let label = auto_label("No DDC controls reported", 12.0, NSFontWeightRegular, &theme.secondary);
+        let message = if display.builtin {
+            "Brightness is not available on this display"
+        } else {
+            "No DDC controls reported"
+        };
+        let label = auto_label(message, 12.0, NSFontWeightRegular, &theme.secondary);
         row.addSubview(&label);
         label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
         label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
@@ -1422,73 +1444,75 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     stack.addArrangedSubview(&controls);
     stack.setCustomSpacing_afterView(24.0, &controls);
 
-    let inputs_heading = section_heading("Inputs", theme);
-    stack.addArrangedSubview(&inputs_heading);
-    stack.setCustomSpacing_afterView(8.0, &inputs_heading);
-    let mut rows: Vec<Retained<NSView>> = Vec::new();
-    for (index, input) in inputs.iter().enumerate() {
-        rows.push(input_row(theme, index, input));
+    if !display.builtin {
+        let inputs_heading = section_heading("Inputs", theme);
+        stack.addArrangedSubview(&inputs_heading);
+        stack.setCustomSpacing_afterView(8.0, &inputs_heading);
+        let mut rows: Vec<Retained<NSView>> = Vec::new();
+        for (index, input) in inputs.iter().enumerate() {
+            rows.push(input_row(theme, index, input));
+        }
+        if inputs.is_empty() {
+            let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+            auto_layout(&row);
+            fix_height(&row, 36.0);
+            let label = auto_label("No inputs configured", 12.0, NSFontWeightRegular, &theme.secondary);
+            row.addSubview(&label);
+            label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
+            label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
+            rows.push(row);
+        }
+
+        let add_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&add_row);
+        fix_height(&add_row, 44.0);
+        let bar = hstack();
+        bar.setSpacing(8.0);
+        add_row.addSubview(&bar);
+        bar.leadingAnchor().constraintEqualToAnchor(&add_row.leadingAnchor()).setActive(true);
+        bar.centerYAnchor().constraintEqualToAnchor(&add_row.centerYAnchor()).setActive(true);
+        let lf = text_field_auto("", &bar, 140.0, Some("Label"));
+        let vf = text_field_auto("", &bar, 80.0, Some("0x00"));
+        let protocol = UI.with(|ui| ui.borrow().draft_protocol);
+        let protocol_button = button(protocol.label(), &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(cycleDraftProtocol:));
+        auto_layout(&protocol_button);
+        fix_width(&protocol_button, 70.0);
+        fix_height(&protocol_button, 26.0);
+        let add = button("Add", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(addInput:));
+        auto_layout(&add);
+        fix_width(&add, 60.0);
+        fix_height(&add, 26.0);
+        bar.addArrangedSubview(&lf);
+        bar.addArrangedSubview(&vf);
+        bar.addArrangedSubview(&protocol_button);
+        bar.addArrangedSubview(&add);
+        rows.push(add_row);
+        UI.with(|ui| {
+            let mut ui = ui.borrow_mut();
+            ui.draft_label = Some(lf);
+            ui.draft_value = Some(vf);
+        });
+
+        let reset_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+        auto_layout(&reset_row);
+        fix_height(&reset_row, 44.0);
+        let reset = button("Reset to detected", &reset_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(resetInputs:));
+        auto_layout(&reset);
+        fix_width(&reset, 140.0);
+        fix_height(&reset, 26.0);
+        reset.leadingAnchor().constraintEqualToAnchor(&reset_row.leadingAnchor()).setActive(true);
+        reset.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
+        let hint = auto_label("Changes apply to the menu immediately.", 11.0, NSFontWeightRegular, &theme.secondary);
+        reset_row.addSubview(&hint);
+        hint.leadingAnchor().constraintEqualToAnchor_constant(&reset.trailingAnchor(), 12.0).setActive(true);
+        hint.trailingAnchor().constraintLessThanOrEqualToAnchor(&reset_row.trailingAnchor()).setActive(true);
+        hint.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
+        rows.push(reset_row);
+
+        let inputs_group = group_container(theme, rows);
+        hug_height(&inputs_group);
+        stack.addArrangedSubview(&inputs_group);
     }
-    if inputs.is_empty() {
-        let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-        auto_layout(&row);
-        fix_height(&row, 36.0);
-        let label = auto_label("No inputs configured", 12.0, NSFontWeightRegular, &theme.secondary);
-        row.addSubview(&label);
-        label.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
-        label.centerYAnchor().constraintEqualToAnchor(&row.centerYAnchor()).setActive(true);
-        rows.push(row);
-    }
-
-    let add_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&add_row);
-    fix_height(&add_row, 44.0);
-    let bar = hstack();
-    bar.setSpacing(8.0);
-    add_row.addSubview(&bar);
-    bar.leadingAnchor().constraintEqualToAnchor(&add_row.leadingAnchor()).setActive(true);
-    bar.centerYAnchor().constraintEqualToAnchor(&add_row.centerYAnchor()).setActive(true);
-    let lf = text_field_auto("", &bar, 140.0, Some("Label"));
-    let vf = text_field_auto("", &bar, 80.0, Some("0x00"));
-    let protocol = UI.with(|ui| ui.borrow().draft_protocol);
-    let protocol_button = button(protocol.label(), &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(cycleDraftProtocol:));
-    auto_layout(&protocol_button);
-    fix_width(&protocol_button, 70.0);
-    fix_height(&protocol_button, 26.0);
-    let add = button("Add", &bar, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(addInput:));
-    auto_layout(&add);
-    fix_width(&add, 60.0);
-    fix_height(&add, 26.0);
-    bar.addArrangedSubview(&lf);
-    bar.addArrangedSubview(&vf);
-    bar.addArrangedSubview(&protocol_button);
-    bar.addArrangedSubview(&add);
-    rows.push(add_row);
-    UI.with(|ui| {
-        let mut ui = ui.borrow_mut();
-        ui.draft_label = Some(lf);
-        ui.draft_value = Some(vf);
-    });
-
-    let reset_row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
-    auto_layout(&reset_row);
-    fix_height(&reset_row, 44.0);
-    let reset = button("Reset to detected", &reset_row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, sel!(resetInputs:));
-    auto_layout(&reset);
-    fix_width(&reset, 140.0);
-    fix_height(&reset, 26.0);
-    reset.leadingAnchor().constraintEqualToAnchor(&reset_row.leadingAnchor()).setActive(true);
-    reset.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
-    let hint = auto_label("Changes apply to the menu immediately.", 11.0, NSFontWeightRegular, &theme.secondary);
-    reset_row.addSubview(&hint);
-    hint.leadingAnchor().constraintEqualToAnchor_constant(&reset.trailingAnchor(), 12.0).setActive(true);
-    hint.trailingAnchor().constraintLessThanOrEqualToAnchor(&reset_row.trailingAnchor()).setActive(true);
-    hint.centerYAnchor().constraintEqualToAnchor(&reset_row.centerYAnchor()).setActive(true);
-    rows.push(reset_row);
-
-    let inputs_group = group_container(theme, rows);
-    hug_height(&inputs_group);
-    stack.addArrangedSubview(&inputs_group);
     finish_page(&stack);
 
     UI.with(|ui| ui.borrow_mut().scroll = Some(scroll));
@@ -1559,7 +1583,7 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
     stack.setCustomSpacing_afterView(8.0, &diagnostics_heading);
     let sessions = crate::agent::sessions().len();
     let diagnostics = [
-        ("Displays", format!("{} DDC", model.displays.len())),
+        ("Displays", format!("{} total", model.displays.len())),
         ("Virtual", format!("{} active", crate::screens::list().len())),
         ("Agents", format!("{sessions} session(s)")),
         ("Login item", format!("{:?}", crate::login::status())),
@@ -1693,8 +1717,7 @@ fn build_chrome(window: &NSWindow) {
         );
         UI.with(|ui| ui.borrow_mut().sidebar = Some(sidebar.clone()));
         content.addSubview(&sidebar_scroll);
-        sidebar.reloadData();
-        select_row(&sidebar, page.index());
+        reload_and_select(&sidebar, page.index());
 
         let line = NSBox::initWithFrame(
             mtm().alloc(),
@@ -2016,6 +2039,7 @@ pub fn reposition() {
 }
 
 fn rebuild_page() {
+    crate::refresh_builtin_brightness();
     let (host, page) = UI.with(|ui| {
         let ui = ui.borrow();
         (ui.host.clone(), ui.page)
@@ -2328,6 +2352,18 @@ fn make_source_scroll(
         scroll.setDocumentView(Some(&table));
         (scroll, table)
     }
+}
+
+/// Reloads a source list and selects a row. `reloadData` makes AppKit auto-select row 0, which
+/// posts a selection notification; without the suppression that notification rebuilds the page
+/// from inside the build and leaves two page views stacked.
+fn reload_and_select(table: &NSTableView, row: usize) {
+    UI.with(|ui| ui.borrow_mut().suppress_selection = true);
+    unsafe {
+        table.reloadData();
+    }
+    UI.with(|ui| ui.borrow_mut().suppress_selection = false);
+    select_row(table, row);
 }
 
 fn select_row(table: &NSTableView, row: usize) {
