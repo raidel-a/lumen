@@ -1,0 +1,12 @@
+[package]
+name = "virtual-screen-spike"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+objc2 = "0.5.3"
+objc2-app-kit = { version = "0.2.2", features = ["all"] }
+objc2-foundation = { version = "0.2.2", features = ["NSArray", "NSDate", "NSGeometry", "NSRunLoop", "NSString", "NSValue"] }
+core-graphics = "0.24"
+core-foundation = "0.10"
+libc = "0.2"
