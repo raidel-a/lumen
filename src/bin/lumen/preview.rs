@@ -199,6 +199,13 @@ pub fn name_for_window(window: &NSWindow) -> Option<String> {
     })
 }
 
+/// The close button was pressed on a preview window.
+pub fn close_window(window: &NSWindow) {
+    if let Some(name) = name_for_window(window) {
+        close(&name);
+    }
+}
+
 /// A preview window is closing through its own close button.
 pub fn window_closed(window: &NSWindow) {
     let Some(name) = name_for_window(window) else {

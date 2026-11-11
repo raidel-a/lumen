@@ -496,14 +496,13 @@ unsafe fn auto_paragraph(text: &str, size: f64, color: &NSColor) -> Retained<NST
 unsafe fn paragraph_row(text: &str, size: f64, color: &NSColor, width: f64) -> Retained<NSView> {
     let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
     auto_layout(&row);
-    fix_width(&row, width);
+    // Wrapping only. A fixed row width here makes the page's document exactly as wide as the
+    // window's content area, and once the vertical scroller takes its 17 points the overflow feeds
+    // back into the window, which grows on every rebuild.
     let body = auto_paragraph(text, size, color);
     body.setPreferredMaxLayoutWidth(width);
     row.addSubview(&body);
-    body.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
-    body.trailingAnchor().constraintEqualToAnchor(&row.trailingAnchor()).setActive(true);
-    body.topAnchor().constraintEqualToAnchor(&row.topAnchor()).setActive(true);
-    body.bottomAnchor().constraintEqualToAnchor(&row.bottomAnchor()).setActive(true);
+    pin_edges(&body, &row, 0.0, 0.0, 0.0, 0.0);
     row
 }
 
@@ -701,8 +700,15 @@ unsafe fn page_stack(host: &NSView) -> (Retained<NSScrollView>, Retained<NSStack
     let scroll = NSScrollView::initWithFrame(mtm().alloc(), bounds);
     scroll.setHasVerticalScroller(true);
     scroll.setDrawsBackground(false);
-    scroll.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewWidthSizable | NSAutoresizingMaskOptions::NSViewHeightSizable);
     host.addSubview(&scroll);
+    // Pin the scroll view instead of leaving it on an autoresizing mask. A frame-based scroll view
+    // reports a fitting width that includes its scroller, and the window grows to fit that on every
+    // rebuild once the page is long enough to scroll.
+    auto_layout(&scroll);
+    scroll.leadingAnchor().constraintEqualToAnchor(&host.leadingAnchor()).setActive(true);
+    scroll.trailingAnchor().constraintEqualToAnchor(&host.trailingAnchor()).setActive(true);
+    scroll.topAnchor().constraintEqualToAnchor(&host.topAnchor()).setActive(true);
+    scroll.bottomAnchor().constraintEqualToAnchor(&host.bottomAnchor()).setActive(true);
     let doc = FlippedView::new(NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
     auto_layout(&doc);
     scroll.setDocumentView(Some(&doc));
@@ -1744,6 +1750,8 @@ fn build_chrome(window: &NSWindow) {
             false,
         );
         UI.with(|ui| ui.borrow_mut().sidebar = Some(sidebar.clone()));
+        // Fixed width: only the height follows the window, so the list cannot spill into the page.
+        sidebar_scroll.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewHeightSizable);
         content.addSubview(&sidebar_scroll);
         reload_and_select(&sidebar, page.index());
 
@@ -2481,7 +2489,7 @@ declare_class!(
         fn preview_close(&self, sender: *mut AnyObject) {
             let window: *mut NSWindow = unsafe { msg_send![sender, window] };
             if let Some(window) = unsafe { window.as_ref() } {
-                crate::preview::window_closed(window);
+                crate::preview::close_window(window);
             }
         }
 
@@ -2654,7 +2662,7 @@ declare_class!(
                 .unwrap_or(0);
 
             let (accessory, name_field, size_popup) = unsafe {
-                let accessory = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(340.0, 58.0)));
+                let accessory = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(400.0, 58.0)));
                 let name_label = label(
                     "Name",
                     11.0,
