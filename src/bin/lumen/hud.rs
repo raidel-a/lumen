@@ -48,19 +48,30 @@ const TAHOE_BAR_HEIGHT: f64 = 4.0;
 const CLASSIC_SIZE: f64 = 200.0;
 const CLASSIC_CORNER: f64 = 16.0;
 const CLASSIC_BOTTOM_INSET: f64 = 140.0;
-const CLASSIC_ICON: f64 = 80.0;
+/// Glyph box side. Larger than FineTune's nominal 80 pt because the `sun.max.fill` symbol fills a
+/// smaller fraction of its bounding box than the speaker glyph; a 94 pt box renders the sun at the
+/// ~49 pt height the reference speaker occupies.
+const CLASSIC_ICON: f64 = 94.0;
+/// Point size for the Classic glyph, kept equal to the box so proportional scaling fills it.
+const CLASSIC_ICON_POINT: f64 = 94.0;
 const CLASSIC_TILES: usize = 16;
 const CLASSIC_TILE: f64 = 7.5;
 const CLASSIC_TILE_SPACING: f64 = 2.0;
-/// FineTune's `ClassicStyleHUD` stacks a 100 pt icon section over an 80 pt tile section (total
-/// 180 pt) inside the 200 pt frame, so the VStack is centred with a 10 pt margin top and bottom.
-const CLASSIC_VSTACK_MARGIN: f64 = 10.0;
-/// Glyph box bottom in AppKit's bottom-left space: below the 10 pt top margin, a 56 pt spacer and
-/// the 80 pt glyph. 200 - (10 + 56 + 80) = 54.
-const CLASSIC_GLYPH_Y: f64 = CLASSIC_SIZE - (CLASSIC_VSTACK_MARGIN + 56.0 + CLASSIC_ICON);
-/// Tile bottom in AppKit's bottom-left space: below the 10 pt top margin, the 100 pt icon section,
-/// a 40 pt spacer and half a 7.5 pt tile. 200 - (10 + 100 + 40 + 7.5) = 42.5.
-const CLASSIC_TILE_Y: f64 = CLASSIC_SIZE - (CLASSIC_VSTACK_MARGIN + 100.0 + 40.0 + CLASSIC_TILE);
+/// Vertical positions of the glyph and tile row, in AppKit's bottom-left coordinate space.
+///
+/// FineTune's `ClassicStyleHUD` nests fixed-height sections (icon 100 pt, tiles 80 pt) whose
+/// content overflows and re-centres in SwiftUI in a way that is not obvious from the source, so the
+/// literal "10 pt margin + 56 pt spacer" arithmetic underestimates the spread. These two values are
+/// measured from FineTune's rendered Classic HUD (a 200 pt panel; the reference capture put the
+/// glyph top ~59 pt and the tile-row centre ~166 pt below the top edge) and reproduce it 1:1:
+/// the glyph sits higher and the tiles sit lower, with a wider gap between them.
+///
+/// Glyph box bottom in AppKit's bottom-left space. The reference puts the glyph's optical centre
+/// ~87 pt below the top edge, i.e. AppKit Y centre 113; with a 94 pt box that is a bottom of
+/// 113 - 47 = 66.
+const CLASSIC_GLYPH_Y: f64 = 66.0;
+/// Tile bottom: row centre ~166 pt from the top edge -> 200 - 166 - 7.5/2 ≈ 27.
+const CLASSIC_TILE_Y: f64 = 27.0;
 /// FineTune's `hudTileActive` / `hudTileInactive` tokens: white at these alphas in the dark HUD.
 const TILE_ACTIVE_ALPHA: f64 = 0.7;
 const TILE_INACTIVE_ALPHA: f64 = 0.2;
@@ -525,11 +536,10 @@ fn build_classic() -> Hud {
         let size = NSSize::new(CLASSIC_SIZE, CLASSIC_SIZE);
         let (window, effect) = make_window(size, CLASSIC_CORNER);
 
-        // Large sun glyph in the upper portion. FineTune centres the 180 pt content VStack in the
-        // 200 pt frame (10 pt top margin), then a 56 pt top spacer and the 80 pt glyph. In AppKit's
-        // bottom-left space the box bottom sits CLASSIC_GLYPH_Y (54) pt up.
+        // Large sun glyph in the upper portion, positioned to match FineTune's rendered Classic
+        // HUD (glyph sits high). CLASSIC_GLYPH_Y is the box bottom in AppKit's bottom-left space.
         let glyph = make_glyph(
-            CLASSIC_ICON,
+            CLASSIC_ICON_POINT,
             NSRect::new(
                 NSPoint::new((CLASSIC_SIZE - CLASSIC_ICON) / 2.0, CLASSIC_GLYPH_Y),
                 NSSize::new(CLASSIC_ICON, CLASSIC_ICON),
@@ -537,9 +547,8 @@ fn build_classic() -> Hud {
         );
         effect.addSubview(&glyph);
 
-        // Sixteen square tiles, centred horizontally. After the 10 pt top margin and the 100 pt
-        // icon section, FineTune puts a 40 pt spacer then the tile row, so the tile bottom is
-        // CLASSIC_TILE_Y (42.5) pt up in AppKit's bottom-left space.
+        // Sixteen square tiles, centred horizontally, sitting low near the bottom to match
+        // FineTune's rendered Classic HUD. CLASSIC_TILE_Y is the tile bottom in AppKit space.
         let row_width =
             CLASSIC_TILES as f64 * CLASSIC_TILE + (CLASSIC_TILES as f64 - 1.0) * CLASSIC_TILE_SPACING;
         let start_x = (CLASSIC_SIZE - row_width) / 2.0;
@@ -612,11 +621,13 @@ mod tests {
     use super::{filled_tiles, hud_spec, CLASSIC_GLYPH_Y, CLASSIC_TILE_Y};
 
     #[test]
-    fn classic_geometry_matches_centred_vstack() {
-        // FineTune centres the 180 pt content in the 200 pt frame (10 pt margins), so in AppKit's
-        // bottom-left space the glyph box bottom is 54 and the tile bottom is 42.5.
-        assert!((CLASSIC_GLYPH_Y - 54.0).abs() < 1e-9);
-        assert!((CLASSIC_TILE_Y - 42.5).abs() < 1e-9);
+    fn classic_geometry_matches_finetune_render() {
+        // Measured from FineTune's rendered Classic HUD (200 pt panel): glyph optical centre
+        // ~87 pt below the top edge (AppKit centre 113; 94 pt box -> bottom 66), tiles low with a
+        // bottom of 27. The glyph must sit clearly above the tiles.
+        assert!((CLASSIC_GLYPH_Y - 66.0).abs() < 1e-9);
+        assert!((CLASSIC_TILE_Y - 27.0).abs() < 1e-9);
+        assert!(CLASSIC_GLYPH_Y > CLASSIC_TILE_Y);
     }
 
     #[test]
