@@ -176,6 +176,60 @@ fn default_capture_limit() -> Option<u32> {
     Some(20)
 }
 
+/// How far one brightness key press moves the level, as a fraction of the display's range.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BrightnessStep {
+    /// 1/8 of the range per press.
+    Coarse,
+    /// 1/16 of the range per press, matching macOS's own brightness increment.
+    Normal,
+    /// 1/32 of the range per press.
+    Fine,
+}
+
+impl Default for BrightnessStep {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl BrightnessStep {
+    /// The denominator of the step fraction: the number of presses to cross the whole range.
+    pub fn divisions(self) -> u16 {
+        match self {
+            BrightnessStep::Coarse => 8,
+            BrightnessStep::Normal => 16,
+            BrightnessStep::Fine => 32,
+        }
+    }
+}
+
+/// The on-screen brightness indicator's look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HudStyle {
+    /// The modern frosted panel with a glyph and a continuous bar.
+    Tahoe,
+    /// The older 200x200 pre-Tahoe panel: an 80 pt sun glyph above a row of sixteen square tiles
+    /// that fill left to right, centred near the bottom of the screen. No percentage.
+    Classic,
+}
+
+impl Default for HudStyle {
+    fn default() -> Self {
+        Self::Tahoe
+    }
+}
+
+fn default_brightness_step() -> BrightnessStep {
+    BrightnessStep::Normal
+}
+
+fn default_hud_style() -> HudStyle {
+    HudStyle::Tahoe
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DisplayConfig {
     /// `vendor:model:serial`, or `name:<product name>` when the EDID gives nothing better.
@@ -240,6 +294,16 @@ pub struct Config {
     pub auto_reclaim_minutes: Option<u32>,
     /// Show the brightness percentage and presets in each display's submenu.
     pub show_brightness: bool,
+    /// Let the brightness media keys (F1/F2) drive brightness through Lumen. Off by default
+    /// because it needs Accessibility permission and overrides the system's own keys.
+    #[serde(default)]
+    pub brightness_keys_enabled: bool,
+    /// How far one brightness key press moves the level.
+    #[serde(default = "default_brightness_step")]
+    pub brightness_step: BrightnessStep,
+    /// The on-screen brightness indicator's look.
+    #[serde(default = "default_hud_style")]
+    pub hud_style: HudStyle,
     pub displays: Vec<DisplayConfig>,
     pub released: Vec<ReleasedRecord>,
     /// Screens that exist only in memory, for the agent workspace and for capture.
@@ -286,6 +350,9 @@ impl Default for Config {
             reclaim_on_quit: true,
             auto_reclaim_minutes: None,
             show_brightness: true,
+            brightness_keys_enabled: false,
+            brightness_step: BrightnessStep::Normal,
+            hud_style: HudStyle::Tahoe,
             displays: Vec::new(),
             released: Vec::new(),
             virtual_screens: Vec::new(),
@@ -528,6 +595,22 @@ mod tests {
         assert!(config.agent_headless);
         assert_eq!(config.capture_limit, Some(20));
         assert_eq!(config.virtual_defaults.width, 1920);
+        assert!(!config.brightness_keys_enabled);
+        assert_eq!(config.brightness_step, BrightnessStep::Normal);
+        assert_eq!(config.hud_style, HudStyle::Tahoe);
+    }
+
+    #[test]
+    fn brightness_key_settings_round_trip() {
+        let mut config = Config::default();
+        config.brightness_keys_enabled = true;
+        config.brightness_step = BrightnessStep::Fine;
+        config.hud_style = HudStyle::Classic;
+        let text = serde_json::to_string(&config).expect("serialize");
+        let back: Config = serde_json::from_str(&text).expect("parse");
+        assert!(back.brightness_keys_enabled);
+        assert_eq!(back.brightness_step, BrightnessStep::Fine);
+        assert_eq!(back.hud_style, HudStyle::Classic);
     }
 
     #[test]
