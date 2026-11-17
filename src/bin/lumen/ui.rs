@@ -42,8 +42,6 @@ const MIN_HEIGHT: f64 = 500.0;
 const TOOLBAR: f64 = 52.0;
 const MARGIN: f64 = 28.0;
 
-const PAGES: [&str; 4] = ["General", "Displays", "Virtual Displays", "About"];
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     General,
@@ -131,7 +129,6 @@ pub struct Ui {
     host: Option<Retained<NSView>>,
     scroll: Option<Retained<NSScrollView>>,
     built_page: Option<Page>,
-    sidebar: Option<Retained<NSTableView>>,
     tabs: Option<Retained<NSSegmentedControl>>,
     display_list: Option<Retained<NSTableView>>,
     suppress_selection: bool,
@@ -166,7 +163,6 @@ impl Default for Ui {
             host: None,
             scroll: None,
             built_page: None,
-            sidebar: None,
             tabs: None,
             display_list: None,
             suppress_selection: false,
@@ -1858,9 +1854,6 @@ fn build_chrome(window: &NSWindow) {
         tabs.centerYAnchor().constraintEqualToAnchor(&bar.centerYAnchor()).setActive(true);
         UI.with(|ui| ui.borrow_mut().tabs = Some(tabs));
 
-        // The old source-list sidebar is gone; nothing should match the sidebar table any more.
-        UI.with(|ui| ui.borrow_mut().sidebar = None);
-
         let line = NSBox::initWithFrame(
             mtm().alloc(),
             NSRect::new(
@@ -2404,17 +2397,8 @@ declare_class!(
     unsafe impl NSTableViewDataSource for SourceList {
         #[method(numberOfRowsInTableView:)]
         fn number_of_rows(&self, table: &NSTableView) -> isize {
-            let (sidebar, display_list) = UI.with(|ui| {
-                let ui = ui.borrow();
-                (ui.sidebar.clone(), ui.display_list.clone())
-            });
-            if sidebar
-                .as_ref()
-                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
-                .unwrap_or(false)
-            {
-                PAGES.len() as isize
-            } else if display_list
+            let display_list = UI.with(|ui| ui.borrow().display_list.clone());
+            if display_list
                 .as_ref()
                 .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
                 .unwrap_or(false)
@@ -2434,17 +2418,8 @@ declare_class!(
             _column: Option<&NSTableColumn>,
             row: isize,
         ) -> Option<Retained<NSView>> {
-            let (sidebar, display_list) = UI.with(|ui| {
-                let ui = ui.borrow();
-                (ui.sidebar.clone(), ui.display_list.clone())
-            });
-            let text = if sidebar
-                .as_ref()
-                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
-                .unwrap_or(false)
-            {
-                PAGES.get(row as usize).copied().unwrap_or("").to_string()
-            } else if display_list
+            let display_list = UI.with(|ui| ui.borrow().display_list.clone());
+            let text = if display_list
                 .as_ref()
                 .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
                 .unwrap_or(false)
@@ -2486,31 +2461,7 @@ declare_class!(
                 return;
             };
             let table = unsafe { &*(&*object as *const AnyObject as *const NSTableView) };
-            let (sidebar, display_list) = UI.with(|ui| {
-                let ui = ui.borrow();
-                (ui.sidebar.clone(), ui.display_list.clone())
-            });
-            if sidebar
-                .as_ref()
-                .map(|sidebar| std::ptr::eq(&**sidebar as *const NSTableView, table))
-                .unwrap_or(false)
-            {
-                let row = unsafe { table.selectedRow() };
-                if row < 0 {
-                    return;
-                }
-                let page = Page::from_row(row);
-                if UI.with(|ui| ui.borrow().page) == page {
-                    return;
-                }
-                UI.with(|ui| ui.borrow_mut().page = page);
-                crate::with_model(|model| {
-                    model.config.settings_page = page.slug().to_string();
-                    model.config.save();
-                });
-                rebuild_page();
-                return;
-            }
+            let display_list = UI.with(|ui| ui.borrow().display_list.clone());
             if display_list
                 .as_ref()
                 .map(|list| std::ptr::eq(&**list as *const NSTableView, table))
