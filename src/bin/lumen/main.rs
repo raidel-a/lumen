@@ -16,6 +16,7 @@ mod preview;
 mod status;
 mod ui;
 mod screens;
+mod updater;
 
 use config::Protocol;
 use menu::Action;
