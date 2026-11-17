@@ -23,7 +23,9 @@ use objc2_app_kit::{
     NSTableColumn, NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSTableViewStyle,
     NSMenu, NSMenuDelegate,
     NSPasteboard, NSPasteboardTypeString,
-    NSPopUpButton, NSScreen, NSScrollView, NSSlider, NSSwitch, NSTextAlignment, NSTextField,
+    NSPopUpButton, NSScreen, NSScrollView,
+    NSSegmentDistribution, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSSlider, NSSwitch, NSTextAlignment, NSTextField,
     NSTickMarkPosition,
     NSTitlePosition, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
@@ -37,7 +39,7 @@ use std::cell::RefCell;
 
 const MIN_WIDTH: f64 = 880.0;
 const MIN_HEIGHT: f64 = 500.0;
-const SIDEBAR: f64 = 200.0;
+const TOOLBAR: f64 = 52.0;
 const MARGIN: f64 = 28.0;
 
 const PAGES: [&str; 4] = ["General", "Displays", "Virtual Displays", "About"];
@@ -87,6 +89,30 @@ impl Page {
             _ => Page::General,
         }
     }
+
+    /// The four sections in toolbar order.
+    const ALL: [Page; 4] = [Page::General, Page::Displays, Page::Virtual, Page::About];
+
+    /// SF Symbol drawn in the toolbar tab for this section.
+    fn symbol(self) -> &'static str {
+        match self {
+            Page::General => "gearshape",
+            Page::Displays => "display",
+            Page::Virtual => "rectangle.on.rectangle",
+            Page::About => "info.circle",
+        }
+    }
+
+    /// Short label under the toolbar icon. "Virtual Displays" is too wide for a tab, and the icon
+    /// already carries the meaning.
+    fn tab_label(self) -> &'static str {
+        match self {
+            Page::General => "General",
+            Page::Displays => "Displays",
+            Page::Virtual => "Virtual",
+            Page::About => "About",
+        }
+    }
 }
 
 /// Text being edited when a rescan rebuilds the virtual display page.
@@ -106,9 +132,11 @@ pub struct Ui {
     scroll: Option<Retained<NSScrollView>>,
     built_page: Option<Page>,
     sidebar: Option<Retained<NSTableView>>,
+    tabs: Option<Retained<NSSegmentedControl>>,
     display_list: Option<Retained<NSTableView>>,
     suppress_selection: bool,
     login_note: Option<String>,
+    brightness_keys_note: Option<String>,
     brightness_value: Option<Retained<NSTextField>>,
     contrast_value: Option<Retained<NSTextField>>,
     volume_value: Option<Retained<NSTextField>>,
@@ -139,9 +167,11 @@ impl Default for Ui {
             scroll: None,
             built_page: None,
             sidebar: None,
+            tabs: None,
             display_list: None,
             suppress_selection: false,
             login_note: None,
+            brightness_keys_note: None,
             brightness_value: None,
             contrast_value: None,
             volume_value: None,
@@ -771,6 +801,54 @@ unsafe fn build_general(host: &NSView, model: &Model, theme: &Theme) {
     hug_height(&displays);
     stack.addArrangedSubview(&displays);
     stack.setCustomSpacing_afterView(24.0, &displays);
+
+    let keys_heading = section_heading("Brightness Keys", theme);
+    stack.addArrangedSubview(&keys_heading);
+    stack.setCustomSpacing_afterView(8.0, &keys_heading);
+    let step_index = match model.config.brightness_step {
+        crate::config::BrightnessStep::Coarse => 0,
+        crate::config::BrightnessStep::Normal => 1,
+        crate::config::BrightnessStep::Fine => 2,
+    };
+    let style_index = match model.config.hud_style {
+        crate::config::HudStyle::Tahoe => 0,
+        crate::config::HudStyle::Classic => 1,
+    };
+    let keys = group_container(theme, vec![
+        row_toggle(
+            theme,
+            "Use the brightness keys",
+            "Let F1/F2 control the display under the pointer and show Lumen's indicator.",
+            model.config.brightness_keys_enabled,
+            sel!(toggleBrightnessKeys:),
+        ),
+        row_popup(
+            theme,
+            "Step",
+            "How far one key press moves brightness.",
+            &["Coarse", "Normal", "Fine"],
+            step_index,
+            sel!(brightnessStep:),
+        ),
+        row_popup(
+            theme,
+            "Indicator",
+            "How the on-screen brightness indicator looks.",
+            &["Tahoe", "Classic"],
+            style_index,
+            sel!(hudStyle:),
+        ),
+    ]);
+    hug_height(&keys);
+    stack.addArrangedSubview(&keys);
+    if let Some(note) = UI.with(|ui| ui.borrow().brightness_keys_note.clone()) {
+        let note = paragraph_row(&note, 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+        stack.setCustomSpacing_afterView(8.0, &keys);
+        stack.addArrangedSubview(&note);
+        stack.setCustomSpacing_afterView(24.0, &note);
+    } else {
+        stack.setCustomSpacing_afterView(24.0, &keys);
+    }
 
     let startup_heading = section_heading("Startup", theme);
     stack.addArrangedSubview(&startup_heading);
@@ -1732,32 +1810,63 @@ fn build_chrome(window: &NSWindow) {
             subview.removeFromSuperview();
         }
 
-        let effect = NSVisualEffectView::initWithFrame(
-            mtm().alloc(),
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR, bounds.size.height)),
-        );
-        effect.setMaterial(NSVisualEffectMaterial::Sidebar);
-        effect.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        effect.setState(NSVisualEffectState::Active);
-        effect.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewHeightSizable);
-        content.addSubview(&effect);
-
         let page = UI.with(|ui| ui.borrow().page);
-        let (sidebar_scroll, sidebar) = make_source_scroll(
-            NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(SIDEBAR, bounds.size.height)),
-            30.0,
-            SIDEBAR - 32.0,
-            false,
+
+        // A toolbar strip across the top carries the section tabs, Logic Pro style: no sidebar, the
+        // sections sit in one row and the selected page fills the body below.
+        let bar = NSVisualEffectView::initWithFrame(
+            mtm().alloc(),
+            NSRect::new(
+                NSPoint::new(0.0, bounds.size.height - TOOLBAR),
+                NSSize::new(bounds.size.width, TOOLBAR),
+            ),
         );
-        UI.with(|ui| ui.borrow_mut().sidebar = Some(sidebar.clone()));
-        // Fixed width: only the height follows the window, so the list cannot spill into the page.
-        sidebar_scroll.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewHeightSizable);
-        content.addSubview(&sidebar_scroll);
-        reload_and_select(&sidebar, page.index());
+        bar.setMaterial(NSVisualEffectMaterial::HeaderView);
+        bar.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
+        bar.setState(NSVisualEffectState::Active);
+        bar.setAutoresizingMask(
+            NSAutoresizingMaskOptions::NSViewWidthSizable
+                | NSAutoresizingMaskOptions::NSViewMinYMargin,
+        );
+        content.addSubview(&bar);
+
+        let tabs = NSSegmentedControl::new(mtm());
+        tabs.setSegmentStyle(NSSegmentStyle::Separated);
+        tabs.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
+        tabs.setSegmentDistribution(NSSegmentDistribution::Fit);
+        tabs.setSegmentCount(Page::ALL.len() as isize);
+        for (index, section) in Page::ALL.iter().enumerate() {
+            let index = index as isize;
+            tabs.setLabel_forSegment(&NSString::from_str(section.tab_label()), index);
+            tabs.setWidth_forSegment(92.0, index);
+            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+                &NSString::from_str(section.symbol()),
+                None,
+            ) {
+                tabs.setImage_forSegment(Some(&image), index);
+                tabs.setImageScaling_forSegment(
+                    objc2_app_kit::NSImageScaling::NSImageScaleProportionallyDown,
+                    index,
+                );
+            }
+        }
+        tabs.setSelectedSegment(page.index() as isize);
+        wire(&tabs, sel!(selectPage:));
+        auto_layout(&tabs);
+        bar.addSubview(&tabs);
+        tabs.centerXAnchor().constraintEqualToAnchor(&bar.centerXAnchor()).setActive(true);
+        tabs.centerYAnchor().constraintEqualToAnchor(&bar.centerYAnchor()).setActive(true);
+        UI.with(|ui| ui.borrow_mut().tabs = Some(tabs));
+
+        // The old source-list sidebar is gone; nothing should match the sidebar table any more.
+        UI.with(|ui| ui.borrow_mut().sidebar = None);
 
         let line = NSBox::initWithFrame(
             mtm().alloc(),
-            NSRect::new(NSPoint::new(SIDEBAR, 0.0), NSSize::new(1.0, bounds.size.height)),
+            NSRect::new(
+                NSPoint::new(0.0, bounds.size.height - TOOLBAR - 1.0),
+                NSSize::new(bounds.size.width, 1.0),
+            ),
         );
         line.setBoxType(NSBoxType::NSBoxCustom);
         line.setTitlePosition(NSTitlePosition::NSNoTitle);
@@ -1765,14 +1874,17 @@ fn build_chrome(window: &NSWindow) {
         line.setCornerRadius(0.0);
         line.setFillColor(&NSColor::separatorColor());
         line.setBorderColor(&NSColor::separatorColor());
-        line.setAutoresizingMask(NSAutoresizingMaskOptions::NSViewHeightSizable);
+        line.setAutoresizingMask(
+            NSAutoresizingMaskOptions::NSViewWidthSizable
+                | NSAutoresizingMaskOptions::NSViewMinYMargin,
+        );
         content.addSubview(&line);
 
         let host = NSView::initWithFrame(
             mtm().alloc(),
             NSRect::new(
-                NSPoint::new(SIDEBAR + 1.0, 0.0),
-                NSSize::new(bounds.size.width - SIDEBAR - 1.0, bounds.size.height),
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(bounds.size.width, bounds.size.height - TOOLBAR - 1.0),
             ),
         );
         host.setAutoresizingMask(
@@ -1935,12 +2047,7 @@ pub fn open_command(page: Option<&str>, screen: Option<&str>) -> Result<(), Stri
             model.config.settings_page = page.slug().to_string();
             model.config.save();
         });
-        let sidebar = UI.with(|ui| ui.borrow().sidebar.clone());
-        if let Some(sidebar) = sidebar {
-            if unsafe { sidebar.selectedRow() } != page.index() as isize {
-                select_row(&sidebar, page.index());
-            }
-        }
+        sync_tabs(page);
     }
     open(None, screen);
     Ok(())
@@ -2110,11 +2217,24 @@ pub fn reposition() {
     });
 }
 
+/// Keeps the toolbar's selected tab in step with the active page, for the paths that change the
+/// page without going through the segmented control (the control socket and the saved page).
+fn sync_tabs(page: Page) {
+    let tabs = UI.with(|ui| ui.borrow().tabs.clone());
+    if let Some(tabs) = tabs {
+        unsafe {
+            if tabs.selectedSegment() != page.index() as isize {
+                tabs.setSelectedSegment(page.index() as isize);
+            }
+        }
+    }
+}
+
 fn rebuild_page() {
     crate::refresh_builtin_brightness();
-    let (host, page) = UI.with(|ui| {
+    let (host, page, scroll, built) = UI.with(|ui| {
         let ui = ui.borrow();
-        (ui.host.clone(), ui.page)
+        (ui.host.clone(), ui.page, ui.scroll.clone(), ui.built_page)
     });
     let Some(host) = host else {
         return;
@@ -2122,8 +2242,50 @@ fn rebuild_page() {
     if host.window().is_none() {
         return;
     }
+    // A rebuild replaces the scroll view, so the new one starts at the top. When the same page is
+    // rebuilt after a value change, remember the vertical offset and re-apply it, otherwise a
+    // single toggle or slider change snaps the whole page back to the top. Switching sections is a
+    // different page, so it should start at the top and the offset is dropped.
+    let offset = if built == Some(page) {
+        scroll.map(|scroll| unsafe { scroll.contentView().bounds().origin.y })
+    } else {
+        None
+    };
     let model = crate::with_model(|model| model.snapshot());
     build_page(&host, &model, page);
+    sync_tabs(page);
+    if let Some(offset) = offset {
+        restore_scroll_offset(offset);
+    }
+}
+
+/// Scrolls the freshly built page back to a remembered vertical offset, clamped to its new content
+/// height so a shorter page does not scroll into empty space.
+fn restore_scroll_offset(offset: f64) {
+    if offset <= 0.0 {
+        return;
+    }
+    let scroll = UI.with(|ui| ui.borrow().scroll.clone());
+    let Some(scroll) = scroll else {
+        return;
+    };
+    unsafe {
+        // Layout has to settle before the document and clip heights are final, or the clamp uses
+        // the old content size and the offset lands short.
+        scroll.layoutSubtreeIfNeeded();
+        let clip = scroll.contentView();
+        let Some(doc) = scroll.documentView() else {
+            return;
+        };
+        let max = (doc.bounds().size.height - clip.bounds().size.height).max(0.0);
+        let target = offset.min(max);
+        if target <= 0.0 {
+            return;
+        }
+        let point = NSPoint::new(clip.bounds().origin.x, target);
+        clip.scrollToPoint(point);
+        scroll.reflectScrolledClipView(&clip);
+    }
 }
 
 pub fn rebuild_if_open() {
@@ -2493,6 +2655,11 @@ declare_class!(
             }
         }
 
+        #[method(hudDismiss:)]
+        fn hud_dismiss(&self, _timer: *mut AnyObject) {
+            crate::hud::dismiss();
+        }
+
         #[method(previewPause:)]
         fn preview_pause(&self, sender: *mut AnyObject) {
             let window: *mut NSWindow = unsafe { msg_send![sender, window] };
@@ -2736,6 +2903,24 @@ declare_class!(
         #[method(noop:)]
         fn noop(&self, _sender: *mut AnyObject) {}
 
+        #[method(selectPage:)]
+        fn select_page(&self, sender: *mut AnyObject) {
+            let index: isize = unsafe { msg_send![sender, selectedSegment] };
+            if index < 0 {
+                return;
+            }
+            let page = Page::from_row(index);
+            if UI.with(|ui| ui.borrow().page) == page {
+                return;
+            }
+            UI.with(|ui| ui.borrow_mut().page = page);
+            crate::with_model(|model| {
+                model.config.settings_page = page.slug().to_string();
+                model.config.save();
+            });
+            rebuild_page();
+        }
+
         #[method(testInput:)]
         fn test_input(&self, sender: *mut AnyObject) {
             let index = sender_tag(sender).max(0) as usize;
@@ -2854,6 +3039,71 @@ declare_class!(
             UI.with(|ui| {
                 ui.borrow_mut().login_note = result.err();
             });
+            crate::after_change();
+        }
+
+        #[method(toggleBrightnessKeys:)]
+        fn toggle_brightness_keys(&self, _sender: *mut AnyObject) {
+            let turning_on = !crate::with_model(|model| model.config.brightness_keys_enabled);
+            let mut note: Option<String> = None;
+            if turning_on {
+                // Ask for Accessibility permission; the tap only works once granted.
+                if !crate::hotkeys::permission::prompt() {
+                    note = Some(
+                        "Allow Lumen under System Settings > Privacy & Security > Accessibility, \
+                         then toggle this on again."
+                            .to_string(),
+                    );
+                }
+            }
+            crate::with_model(|model| {
+                model.config.brightness_keys_enabled = turning_on;
+                model.config.save();
+            });
+            // Install or remove the tap to match the new state (a no-op when permission is
+            // missing, since install checks trust).
+            crate::hotkeys::refresh();
+            UI.with(|ui| ui.borrow_mut().brightness_keys_note = note);
+            crate::after_change();
+        }
+
+        #[method(brightnessStep:)]
+        fn brightness_step(&self, sender: *mut AnyObject) {
+            let index: isize = unsafe { msg_send![sender, indexOfSelectedItem] };
+            let step = match index {
+                0 => crate::config::BrightnessStep::Coarse,
+                2 => crate::config::BrightnessStep::Fine,
+                _ => crate::config::BrightnessStep::Normal,
+            };
+            crate::with_model(|model| {
+                model.config.brightness_step = step;
+                model.config.save();
+            });
+            crate::after_change();
+        }
+
+        #[method(hudStyle:)]
+        fn hud_style(&self, sender: *mut AnyObject) {
+            let index: isize = unsafe { msg_send![sender, indexOfSelectedItem] };
+            let style = match index {
+                1 => crate::config::HudStyle::Classic,
+                _ => crate::config::HudStyle::Tahoe,
+            };
+            crate::with_model(|model| {
+                model.config.hud_style = style;
+                model.config.save();
+            });
+            // Preview the chosen style so the change is visible immediately.
+            let (value, max, controllable) = crate::with_model(|model| {
+                model
+                    .displays
+                    .iter()
+                    .find(|display| display.builtin)
+                    .or_else(|| model.displays.first())
+                    .and_then(|display| display.brightness.map(|(v, m)| (v, m, true)))
+                    .unwrap_or((50, 100, true))
+            });
+            crate::hud::show(value, max, controllable);
             crate::after_change();
         }
 
