@@ -273,6 +273,13 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
         menu.addItem(&separator());
         menu.addItem(&action_item("Settings…", menu::SETTINGS, false, true, actions));
         menu.addItem(&action_item("Refresh", menu::REFRESH, false, true, actions));
+        menu.addItem(&action_item(
+            "Check for Updates…",
+            menu::CHECK_UPDATES,
+            false,
+            crate::updater::can_check(),
+            actions,
+        ));
         menu.addItem(&action_item("Quit Lumen", menu::QUIT, false, true, actions));
     }
 }
