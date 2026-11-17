@@ -1823,6 +1823,10 @@ fn tab_button(section: Page, index: isize) -> Retained<NSButton> {
                 objc2_app_kit::NSImageSymbolScale::Medium,
             );
             let image = image.imageWithSymbolConfiguration(&config).unwrap_or(image);
+            // Template rendering makes contentTintColor recolour the whole glyph uniformly. Without
+            // it, symbols drawn with inner detail (info.circle) keep their own colour and only the
+            // label follows the selection tint.
+            image.setTemplate(true);
             button.setImage(Some(&image));
         }
         tag(&button, index);
