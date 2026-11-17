@@ -640,6 +640,11 @@ fn main() {
     status::init(&actions);
     control::serve();
 
+    // Start Sparkle's updater so its scheduler can run background checks and notify the user.
+    // With the sparkle feature off this is a logged no-op. We pass background = true and do not
+    // force an immediate check; Sparkle's own scheduler decides when to check.
+    updater::start(true);
+
     spawn_scan();
 
     // Install the brightness-key event tap if the user enabled it and granted Accessibility.
