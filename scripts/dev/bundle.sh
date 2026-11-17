@@ -34,8 +34,15 @@ if [[ ! -e "$sparkle_framework/Versions/Current/Sparkle" ]]; then
   exit 1
 fi
 
-if ! public_ed_key="$("$vendor_sparkle/bin/generate_keys" -p 2>/dev/null)" || [[ -z "$public_ed_key" ]]; then
+# The dev bundle only needs the EdDSA *public* key (it goes in the Info.plist); the private key
+# signs releases and never leaves the host. Prefer an explicit LUMEN_SPARKLE_PUBKEY so a machine
+# without the signing key (a development VM) can build dev bundles without touching a keychain.
+# Otherwise read the public key from the login keychain, generating one only as a last resort.
+if [[ -n "${LUMEN_SPARKLE_PUBKEY:-}" ]]; then
+  public_ed_key="$LUMEN_SPARKLE_PUBKEY"
+elif ! public_ed_key="$("$vendor_sparkle/bin/generate_keys" -p 2>/dev/null)" || [[ -z "$public_ed_key" ]]; then
   echo "no Sparkle signing key found; generating one in the login keychain" >&2
+  echo "(set LUMEN_SPARKLE_PUBKEY to the public key to avoid keychain access, e.g. in a dev VM)" >&2
   "$vendor_sparkle/bin/generate_keys" >/dev/null
   public_ed_key="$("$vendor_sparkle/bin/generate_keys" -p)"
 fi
@@ -47,13 +54,21 @@ mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Framewor
 cp "$root/target/debug/lumen" "$app/Contents/MacOS/lumen"
 
 cp -R "$root/assets/lumen.icon" "$root/.build/dev-icon/AppIcon.icon"
-xcrun actool "$root/.build/dev-icon/catalog" "$root/.build/dev-icon/AppIcon.icon" \
-  --compile "$root/.build/dev-icon/out" \
-  --platform macosx \
-  --minimum-deployment-target "$minimum" \
-  --app-icon AppIcon \
-  --output-partial-info-plist "$root/.build/dev-icon/partial.plist" >/dev/null
-cp "$root/.build/dev-icon/out/AppIcon.icns" "$root/.build/dev-icon/out/Assets.car" "$app/Contents/Resources/"
+# actool ships with full Xcode, not the Command Line Tools. In a CLT-only environment (e.g. a
+# development VM) compile the layered icon when actool is present and otherwise skip it: a dev
+# bundle without the compiled Assets.car still builds, signs and runs. Release bundles are built
+# on a host with full Xcode, so they always get the proper icon.
+if xcrun --find actool >/dev/null 2>&1; then
+  xcrun actool "$root/.build/dev-icon/catalog" "$root/.build/dev-icon/AppIcon.icon" \
+    --compile "$root/.build/dev-icon/out" \
+    --platform macosx \
+    --minimum-deployment-target "$minimum" \
+    --app-icon AppIcon \
+    --output-partial-info-plist "$root/.build/dev-icon/partial.plist" >/dev/null
+  cp "$root/.build/dev-icon/out/AppIcon.icns" "$root/.build/dev-icon/out/Assets.car" "$app/Contents/Resources/"
+else
+  echo "actool not found (Command Line Tools only); dev bundle built without a compiled icon" >&2
+fi
 
 # Embed Sparkle.framework with ditto so the Versions/Current symlink survives.
 ditto "$sparkle_framework" "$app/Contents/Frameworks/Sparkle.framework"
