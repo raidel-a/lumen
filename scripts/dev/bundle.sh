@@ -11,7 +11,15 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 app="$root/dist/Lumen Dev.app"
 minimum="27.0"
-identity="${LUMEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)}"
+# Prefer the Developer ID Application identity so the dev bundle exercises the same hardened-runtime
+# signing as the release bundle; fall back to the first identity, then ad-hoc.
+find_identity() {
+  security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' | grep -m1 "^Developer ID Application:" \
+  || security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' | head -1
+}
+identity="${LUMEN_SIGN_IDENTITY:-$(find_identity)}"
 
 sparkle_owner="raidel-a"
 sparkle_repo="lumen"
@@ -95,8 +103,8 @@ sign_sparkle() {
 }
 
 if [[ -n "$identity" ]]; then
-  sign_sparkle "$identity" --timestamp=none
-  codesign --force --sign "$identity" --timestamp=none "$app" >/dev/null
+  sign_sparkle "$identity" --options runtime --timestamp
+  codesign --force --sign "$identity" --options runtime --timestamp "$app" >/dev/null
 else
   sign_sparkle -
   codesign --force --sign - "$app" >/dev/null

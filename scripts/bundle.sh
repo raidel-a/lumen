@@ -5,12 +5,19 @@
 # Environment:
 #   LUMEN_VERSION        marketing version (default 0.1.0)
 #   LUMEN_BUILD          build number (default: git commit count)
-#   LUMEN_SIGN_IDENTITY  codesign identity (default: first code-signing identity)
+#   LUMEN_SIGN_IDENTITY  codesign identity (default: Developer ID Application, else first identity)
 #   LUMEN_FEED_URL       Sparkle appcast URL (default: the raw.githubusercontent.com URL below)
 #
 # A stable identity matters: TCC grants (Screen Recording) and the SMAppService login item are
 # keyed to the code signature. Ad-hoc signing changes the cdhash on every build, which makes macOS
 # treat each build as a different app.
+#
+# Signing: with a real identity the app is signed with the hardened runtime (--options runtime) and
+# a secure timestamp (--timestamp), which notarisation requires. The nested Sparkle code is signed
+# first (inner-to-outer) with the same identity and runtime. Sparkle's vendored framework ships
+# ad-hoc, so re-signing it with our Developer ID gives it our Team ID; library validation is then
+# satisfied because the app and the framework share a team, and no disable-library-validation
+# entitlement is needed. Ad-hoc fallback stays runtime-free so pure-local dev builds still load.
 #
 # Sparkle: the vendored framework (vendor/Sparkle) must be present. Run scripts/dev/fetch-sparkle.sh
 # once on a fresh checkout. The EdDSA signing key lives in the login keychain (created on demand by
@@ -22,7 +29,16 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app="$root/dist/Lumen.app"
 version="${LUMEN_VERSION:-0.1.0}"
 build="${LUMEN_BUILD:-$(git -C "$root" rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
-identity="${LUMEN_SIGN_IDENTITY:-$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(.*\)".*/\1/p' | head -1)}"
+
+# Prefer the Developer ID Application identity (required for notarised, hardened-runtime builds).
+# Fall back to the first code-signing identity, and finally to ad-hoc, for pure local dev.
+find_identity() {
+  security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' | grep -m1 "^Developer ID Application:" \
+  || security find-identity -v -p codesigning 2>/dev/null \
+    | sed -n 's/.*"\(.*\)".*/\1/p' | head -1
+}
+identity="${LUMEN_SIGN_IDENTITY:-$(find_identity)}"
 minimum="27.0"
 icon_build="$root/.build/icon-build"
 
@@ -122,11 +138,15 @@ sign_sparkle() {
 }
 
 if [[ -n "$identity" ]]; then
-  sign_sparkle "$identity" --timestamp=none
-  codesign --force --sign "$identity" --timestamp=none "$app"
+  # Hardened runtime + secure timestamp: both are required for notarisation. Nested-first so the
+  # inner Sparkle code is sealed into the outer signature.
+  sign_sparkle "$identity" --options runtime --timestamp
+  codesign --force --sign "$identity" --options runtime --timestamp "$app"
   signer="$identity"
 else
   echo "warning: no code-signing identity found, signing ad-hoc; TCC grants will reset on rebuild" >&2
+  # Ad-hoc cannot carry a trusted timestamp and gains nothing from the hardened runtime (it is not
+  # notarisable); sign without them so the local build still loads.
   sign_sparkle -
   codesign --force --sign - "$app"
   signer="ad-hoc"
