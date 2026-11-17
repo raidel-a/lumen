@@ -70,11 +70,18 @@ The default is the display whose menu bar the command came from.
 ## Packaging
 
 `scripts/bundle.sh` builds the app bundle, compiles `assets/lumen.icon`, writes the version and build
-number, and signs with a stable code-signing identity. The identity matters: TCC grants and the
-`SMAppService` login item are keyed to the signature, and ad-hoc signing changes it on every build.
+number, and signs with a stable code-signing identity under the hardened runtime. The identity
+matters: TCC grants and the `SMAppService` login item are keyed to the signature, and ad-hoc signing
+changes it on every build.
 
-- `LUMEN_SIGN_IDENTITY` selects the identity; otherwise the first code-signing identity in the
-  keychain is used, and ad-hoc is the fallback with a warning.
+- `LUMEN_SIGN_IDENTITY` selects the identity; otherwise the **Developer ID Application** identity is
+  used when present, then the first code-signing identity, with ad-hoc as the fallback (with a
+  warning).
+- With a real identity the app is signed with `--options runtime --timestamp` (both required for
+  notarisation). The vendored Sparkle framework ships ad-hoc; re-signing its nested code with the
+  same Developer ID gives it our Team ID, so hardened-runtime library validation is satisfied and no
+  `disable-library-validation` entitlement is needed. Ad-hoc fallback stays runtime- and
+  timestamp-free so pure-local dev builds still load.
 - `LUMEN_VERSION` (default `0.1.0`) and `LUMEN_BUILD` (default: git commit count) feed the plist.
   `lumen --version` and Settings > About show them.
 - `scripts/release.sh` produces `dist/Lumen-<version>.zip` and `.dmg`; the DMG contains the app and
@@ -84,8 +91,69 @@ The icon source is `assets/lumen.icon`, an Icon Composer document. The bundle sc
 `actool` into `Assets.car` (layered, including the Liquid Glass appearance) and a fallback
 `AppIcon.icns`, then sets `CFBundleIconName`. `assets/lumen_icon.svg` is the exported artwork.
 
-Notarisation is not wired in. It needs a Developer ID Application certificate and hardened runtime,
-and the private display API means direct distribution only, never the App Store.
+### Notarisation
+
+`scripts/release.sh` notarises and staples when notary credentials are available; the private display
+API means direct distribution only, never the App Store. The flow signs the `.app`, submits it to
+Apple's notary service, staples the ticket to the `.app` (a zip cannot be stapled), then rebuilds the
+zip and dmg from the stapled bundle and staples the dmg. The appcast is generated last over the final
+stapled zip so its `edSignature` and length match the published bytes. A non-`Accepted` result fails
+the release and prints the `notarytool` log.
+
+Credentials reach the script two ways, checked in this order:
+
+- **Local**: a `notarytool` keychain profile named by `LUMEN_NOTARY_PROFILE` (default `lumen-notary`).
+  Create it once (see below). If it does not exist, release.sh still builds and signs but skips
+  notarisation with a pointer to `store-credentials`.
+- **CI**: the explicit App Store Connect API key triplet `LUMEN_NOTARY_KEY` (path to the `.p8`),
+  `LUMEN_NOTARY_KEY_ID`, and `LUMEN_NOTARY_ISSUER`. The GitHub Actions workflow uses this form.
+
+Signing material (the Developer ID key, cert, and PEM) lives in `~/Developer/lumen-signing/`, outside
+the repository and never committed.
+
+#### One-time: create the notary keychain profile (local)
+
+```
+xcrun notarytool store-credentials "lumen-notary" \
+  --key   <path to AuthKey_XXXXXXXXXX.p8> \
+  --key-id <10-char key id> \
+  --issuer cb2fff29-78dd-46b3-9519-4faff2a64499
+```
+
+Create the App Store Connect API key (and later rotate it) at App Store Connect → Users and Access →
+Integrations → App Store Connect API, with the **Developer** role. Download the `.p8` once (Apple does
+not let you re-download it), note its key ID, and keep it with the other signing material. To rotate,
+create a new key, re-run `store-credentials`, and update the CI secrets.
+
+### One-time migration note: Apple Development → Developer ID
+
+The first Developer-ID-signed build changes the app's code signature (new Team ID and certificate).
+macOS keys TCC permissions and the `SMAppService` login item to the signature, so **existing installed
+copies will, once, re-prompt for Screen Recording and Accessibility and re-register the login item**
+after they update to the first Developer-ID build. This is expected and happens only on that one
+transition; subsequent Developer-ID builds keep the grants because the identity is stable.
+
+### Releasing from CI (GitHub Actions)
+
+`.github/workflows/release.yml` runs on a `v*` tag push: it builds, signs, notarises, staples,
+publishes a GitHub Release with the zip and dmg, and pushes the regenerated `appcast.xml` to `main`.
+It imports the Developer ID identity into a throwaway keychain and deletes it (and every decoded
+secret file) in an `always()` cleanup step.
+
+Required repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | What it is | How to produce it |
+| --- | --- | --- |
+| `DEVELOPER_ID_P12_BASE64` | Developer ID Application identity (cert + private key) as a base64 `.p12` | `security export -k login.keychain -t identities -f pkcs12 -P <pw> -o developer_id.p12` then `base64 -i developer_id.p12 \| pbcopy` |
+| `DEVELOPER_ID_P12_PASSWORD` | the `-P` password used in the export above | choose it at export time |
+| `KEYCHAIN_PASSWORD` | any strong string; unlocks the throwaway CI keychain | generate a random string |
+| `NOTARY_KEY_P8_BASE64` | App Store Connect API key, base64 | `base64 -i AuthKey_XXXXXXXXXX.p8 \| pbcopy` |
+| `NOTARY_KEY_ID` | the 10-char key ID of that API key | shown in App Store Connect next to the key |
+| `NOTARY_ISSUER_ID` | the App Store Connect issuer UUID | `cb2fff29-78dd-46b3-9519-4faff2a64499` |
+| `SPARKLE_ED_PRIVATE_KEY` | the Sparkle EdDSA private key | `./vendor/Sparkle/bin/generate_keys -x key.txt` then paste the file's contents (keep it secret; delete the file) |
+
+The workflow never echoes a secret; each is written to a file or piped straight into `security` /
+`notarytool`.
 
 ## Self-update (Sparkle)
 
@@ -114,7 +182,9 @@ Sparkle verifies every update with an EdDSA (ed25519) signature.
 
 - The **public key** is embedded in `Info.plist` as `SUPublicEDKey` by `bundle.sh`.
 - The **private key** lives in your **login keychain** (account `ed25519`, the default used by
-  Sparkle's `generate_keys`). It is never printed, never written to disk, and never committed.
+  Sparkle's `generate_keys`). Locally it is never printed, never written to disk, and never
+  committed. In CI it is provided as the `SPARKLE_ED_PRIVATE_KEY` secret, written to a file only
+  long enough to import into the throwaway keychain, then deleted in the cleanup step.
 - `bundle.sh` creates the key pair on first run if none exists (`vendor/Sparkle/bin/generate_keys`),
   and reads the public half back with `generate_keys -p`.
 
@@ -132,17 +202,30 @@ key, ship a build with the new `SUPublicEDKey`, and keep signing with the matchi
 
 ### Cutting a release
 
+Tag-driven (recommended): push a `v*` tag and GitHub Actions does the rest (build, sign, notarise,
+staple, publish the release, push the appcast). See *Releasing from CI* above for the required
+secrets.
+
+```
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+Locally:
+
 ```
 LUMEN_VERSION=0.2.0 ./scripts/release.sh
 ```
 
-This builds and signs `Lumen.app` (with Sparkle embedded and nested-code-signed), produces
-`dist/Lumen-<version>.zip` (the Sparkle update enclosure) and `dist/Lumen-<version>.dmg` (the
-website download), then runs `generate_appcast` to sign the zip and update `./appcast.xml`. Enclosure
-URLs point at the GitHub Releases download path for the tag (`v<version>` by default; override with
-`LUMEN_RELEASE_TAG`/`LUMEN_RELEASE_OWNER`/`LUMEN_RELEASE_REPO`).
+This builds and signs `Lumen.app` (hardened runtime, Sparkle embedded and nested-code-signed),
+notarises and staples it when notary credentials are present (keychain profile `lumen-notary`, or the
+`LUMEN_NOTARY_KEY`/`_KEY_ID`/`_ISSUER` triplet), produces `dist/Lumen-<version>.zip` (the Sparkle
+update enclosure) and `dist/Lumen-<version>.dmg` (the website download), then runs `generate_appcast`
+over the final zip to sign it and update `./appcast.xml`. Enclosure URLs point at the GitHub Releases
+download path for the tag (`v<version>` by default; override with
+`LUMEN_RELEASE_TAG`/`LUMEN_RELEASE_OWNER`/`LUMEN_RELEASE_REPO`). Without notary credentials the script
+still builds and signs, prints a skip notice, and leaves the artefacts un-notarised.
 
-Then, by hand (the script does not upload):
+Then, by hand when releasing locally (the script does not upload):
 
 1. Create the GitHub release for the tag and upload `dist/Lumen-<version>.zip` (and the `.dmg` for
    the website).
