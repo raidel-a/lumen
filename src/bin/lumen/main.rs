@@ -420,6 +420,7 @@ pub fn run_action(action: Action) {
             let point = unsafe { NSEvent::mouseLocation() };
             ui::open(Some(point), None);
         }
+        Action::CheckForUpdates => updater::check_now(),
         Action::Quit => {
             preview::close_all();
             let browsers = agent::stop_all();

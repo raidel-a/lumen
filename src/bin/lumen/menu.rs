@@ -7,6 +7,7 @@ pub enum Action {
     Refresh,
     Quit,
     Settings,
+    CheckForUpdates,
     Switch { display: u32, value: u16, protocol: InputProtocol },
     Brightness { display: u32, value: u16 },
     Contrast { display: u32, value: u16 },
@@ -21,6 +22,7 @@ pub enum Action {
 pub const REFRESH: &str = "refresh";
 pub const QUIT: &str = "quit";
 pub const SETTINGS: &str = "settings";
+pub const CHECK_UPDATES: &str = "check-updates";
 
 /// Turns a menu id back into the action it stands for.
 pub fn parse(raw: &str) -> Option<Action> {
@@ -28,6 +30,7 @@ pub fn parse(raw: &str) -> Option<Action> {
         REFRESH => return Some(Action::Refresh),
         QUIT => return Some(Action::Quit),
         SETTINGS => return Some(Action::Settings),
+        CHECK_UPDATES => return Some(Action::CheckForUpdates),
         _ => {}
     }
     if let Some(key) = raw.strip_prefix("release|") {
@@ -103,4 +106,22 @@ pub fn reclaim_id(key: &str) -> String {
 
 pub fn mute_id(display: u32, muted: bool) -> String {
     format!("mute:{display}:{}", u8::from(muted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_trailer_actions() {
+        assert_eq!(parse(REFRESH), Some(Action::Refresh));
+        assert_eq!(parse(QUIT), Some(Action::Quit));
+        assert_eq!(parse(SETTINGS), Some(Action::Settings));
+        assert_eq!(parse(CHECK_UPDATES), Some(Action::CheckForUpdates));
+    }
+
+    #[test]
+    fn unknown_id_is_none() {
+        assert_eq!(parse("nope"), None);
+    }
 }
