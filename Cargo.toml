@@ -13,6 +13,16 @@ path = "src/lib.rs"
 name = "lumen-probe"
 path = "src/bin/probe.rs"
 
+[features]
+# Off by default: builds the Sparkle self-update path (ObjC shim + vendored framework linkage).
+# When off, the updater module compiles to logging no-ops, so `cargo test` / lumen-probe /
+# non-bundle builds do not need the vendored framework. See scripts/dev/fetch-sparkle.sh.
+default = []
+sparkle = []
+
+[build-dependencies]
+cc = "1"
+
 [dependencies]
 core-foundation = "0.10"
 core-foundation-sys = "0.8"

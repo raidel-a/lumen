@@ -565,6 +565,7 @@ name = "lumen"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "cc",
  "core-foundation 0.10.1",
  "core-foundation-sys",
  "core-graphics 0.24.0",
