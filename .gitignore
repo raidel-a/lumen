@@ -4,3 +4,6 @@
 .DS_Store
 /spikes/*/target
 /.build
+# Sparkle is vendored by scripts/dev/fetch-sparkle.sh (pinned + checksum-verified).
+# The framework is ~16 MB, so it is fetched on demand rather than committed.
+/vendor/Sparkle
