@@ -24,8 +24,8 @@ use objc2_app_kit::{
     NSMenu, NSMenuDelegate,
     NSPasteboard, NSPasteboardTypeString,
     NSPopUpButton, NSScreen, NSScrollView,
-    NSSegmentDistribution, NSSegmentStyle, NSSegmentSwitchTracking, NSSegmentedControl,
     NSSlider, NSSwitch, NSTextAlignment, NSTextField,
+    NSCellImagePosition, NSImageSymbolConfiguration,
     NSTickMarkPosition,
     NSTitlePosition, NSView,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
@@ -39,7 +39,7 @@ use std::cell::RefCell;
 
 const MIN_WIDTH: f64 = 880.0;
 const MIN_HEIGHT: f64 = 500.0;
-const TOOLBAR: f64 = 52.0;
+const TOOLBAR: f64 = 68.0;
 const MARGIN: f64 = 28.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -129,7 +129,8 @@ pub struct Ui {
     host: Option<Retained<NSView>>,
     scroll: Option<Retained<NSScrollView>>,
     built_page: Option<Page>,
-    tabs: Option<Retained<NSSegmentedControl>>,
+    /// The toolbar tab buttons (icon above label), one per page, restyled on selection.
+    tabs: Vec<Retained<NSButton>>,
     display_list: Option<Retained<NSTableView>>,
     suppress_selection: bool,
     login_note: Option<String>,
@@ -163,7 +164,7 @@ impl Default for Ui {
             host: None,
             scroll: None,
             built_page: None,
-            tabs: None,
+            tabs: Vec::new(),
             display_list: None,
             suppress_selection: false,
             login_note: None,
@@ -1796,6 +1797,55 @@ fn build_page(host: &NSView, model: &Model, page: Page) {
     crate::preview::set_thumbnails_visible(page == Page::Virtual);
 }
 
+/// A toolbar tab: an SF Symbol icon above its label, borderless, carrying its page index as `tag`.
+/// Selection styling is applied separately by `style_tabs`.
+fn tab_button(section: Page, index: isize) -> Retained<NSButton> {
+    unsafe {
+        let button = NSButton::buttonWithTitle_target_action(
+            &NSString::from_str(section.tab_label()),
+            None,
+            None,
+            mtm(),
+        );
+        button.setBordered(false);
+        button.setImagePosition(NSCellImagePosition::NSImageAbove);
+        button.setImageHugsTitle(true);
+        button.setImageScaling(objc2_app_kit::NSImageScaling::NSImageScaleNone);
+        button.setFont(Some(&NSFont::systemFontOfSize_weight(11.0, NSFontWeightRegular)));
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(section.symbol()),
+            None,
+        ) {
+            // A slightly larger, medium-weight glyph reads as the primary element of the tab.
+            let config = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
+                18.0,
+                NSFontWeightRegular,
+                objc2_app_kit::NSImageSymbolScale::Medium,
+            );
+            let image = image.imageWithSymbolConfiguration(&config).unwrap_or(image);
+            button.setImage(Some(&image));
+        }
+        tag(&button, index);
+        wire(&button, sel!(selectPage:));
+        button
+    }
+}
+
+/// Highlights the selected toolbar tab: accent-tinted icon and label, the rest drawn in the
+/// secondary label colour. Called on build and whenever the page changes.
+fn style_tabs(buttons: &[Retained<NSButton>], selected: usize) {
+    unsafe {
+        for (index, button) in buttons.iter().enumerate() {
+            let tint = if index == selected {
+                NSColor::controlAccentColor()
+            } else {
+                NSColor::secondaryLabelColor()
+            };
+            button.setContentTintColor(Some(&tint));
+        }
+    }
+}
+
 fn build_chrome(window: &NSWindow) {
     unsafe {
         let Some(content) = window.contentView() else {
@@ -1826,33 +1876,25 @@ fn build_chrome(window: &NSWindow) {
         );
         content.addSubview(&bar);
 
-        let tabs = NSSegmentedControl::new(mtm());
-        tabs.setSegmentStyle(NSSegmentStyle::Separated);
-        tabs.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
-        tabs.setSegmentDistribution(NSSegmentDistribution::Fit);
-        tabs.setSegmentCount(Page::ALL.len() as isize);
-        for (index, section) in Page::ALL.iter().enumerate() {
-            let index = index as isize;
-            tabs.setLabel_forSegment(&NSString::from_str(section.tab_label()), index);
-            tabs.setWidth_forSegment(92.0, index);
-            if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-                &NSString::from_str(section.symbol()),
-                None,
-            ) {
-                tabs.setImage_forSegment(Some(&image), index);
-                tabs.setImageScaling_forSegment(
-                    objc2_app_kit::NSImageScaling::NSImageScaleProportionallyDown,
-                    index,
-                );
-            }
-        }
-        tabs.setSelectedSegment(page.index() as isize);
-        wire(&tabs, sel!(selectPage:));
+        let tabs = NSStackView::new(mtm());
+        tabs.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
+        tabs.setAlignment(NSLayoutAttribute::CenterY);
+        tabs.setSpacing(2.0);
+        tabs.setDistribution(NSStackViewDistribution::EqualSpacing);
         auto_layout(&tabs);
         bar.addSubview(&tabs);
         tabs.centerXAnchor().constraintEqualToAnchor(&bar.centerXAnchor()).setActive(true);
         tabs.centerYAnchor().constraintEqualToAnchor(&bar.centerYAnchor()).setActive(true);
-        UI.with(|ui| ui.borrow_mut().tabs = Some(tabs));
+
+        let mut buttons = Vec::with_capacity(Page::ALL.len());
+        for (index, section) in Page::ALL.iter().enumerate() {
+            let button = tab_button(*section, index as isize);
+            tabs.addArrangedSubview(&button);
+            button.widthAnchor().constraintEqualToConstant(76.0).setActive(true);
+            buttons.push(button);
+        }
+        style_tabs(&buttons, page.index());
+        UI.with(|ui| ui.borrow_mut().tabs = buttons);
 
         let line = NSBox::initWithFrame(
             mtm().alloc(),
@@ -2213,13 +2255,9 @@ pub fn reposition() {
 /// Keeps the toolbar's selected tab in step with the active page, for the paths that change the
 /// page without going through the segmented control (the control socket and the saved page).
 fn sync_tabs(page: Page) {
-    let tabs = UI.with(|ui| ui.borrow().tabs.clone());
-    if let Some(tabs) = tabs {
-        unsafe {
-            if tabs.selectedSegment() != page.index() as isize {
-                tabs.setSelectedSegment(page.index() as isize);
-            }
-        }
+    let buttons = UI.with(|ui| ui.borrow().tabs.clone());
+    if !buttons.is_empty() {
+        style_tabs(&buttons, page.index());
     }
 }
 
@@ -2856,7 +2894,7 @@ declare_class!(
 
         #[method(selectPage:)]
         fn select_page(&self, sender: *mut AnyObject) {
-            let index: isize = unsafe { msg_send![sender, selectedSegment] };
+            let index = sender_tag(sender);
             if index < 0 {
                 return;
             }
