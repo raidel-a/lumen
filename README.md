@@ -87,6 +87,77 @@ The icon source is `assets/lumen.icon`, an Icon Composer document. The bundle sc
 Notarisation is not wired in. It needs a Developer ID Application certificate and hardened runtime,
 and the private display API means direct distribution only, never the App Store.
 
+## Self-update (Sparkle)
+
+Lumen updates itself with [Sparkle 2](https://sparkle-project.org). The framework is vendored and
+reached from Rust through a small Objective-C shim (`native/lumen_sparkle.m`), all gated behind the
+`sparkle` Cargo feature (off by default, so `cargo test` and `lumen-probe` do not need the
+framework). A **Check for Updates…** menu item triggers a manual check, and the updater also runs
+Sparkle's background scheduler at launch.
+
+### Vendoring Sparkle
+
+The framework and its command-line tools are not committed (they are ~16 MB and gitignored). Fetch
+them once on a fresh checkout:
+
+```
+./scripts/dev/fetch-sparkle.sh    # pinned to a version, verified by SHA-256, unpacked to vendor/Sparkle
+```
+
+`scripts/bundle.sh` and `scripts/release.sh` fail with a pointer to this script if `vendor/Sparkle`
+is missing. The pinned version and checksum live in `scripts/dev/fetch-sparkle.sh` and
+`vendor/Sparkle/VENDOR.md`.
+
+### EdDSA signing keys
+
+Sparkle verifies every update with an EdDSA (ed25519) signature.
+
+- The **public key** is embedded in `Info.plist` as `SUPublicEDKey` by `bundle.sh`.
+- The **private key** lives in your **login keychain** (account `ed25519`, the default used by
+  Sparkle's `generate_keys`). It is never printed, never written to disk, and never committed.
+- `bundle.sh` creates the key pair on first run if none exists (`vendor/Sparkle/bin/generate_keys`),
+  and reads the public half back with `generate_keys -p`.
+
+To inspect or rotate the key:
+
+```
+./vendor/Sparkle/bin/generate_keys -p                 # print the current public key
+./vendor/Sparkle/bin/generate_keys -x private-key.txt # export the private key (keep it secret; delete after)
+./vendor/Sparkle/bin/generate_keys -f private-key.txt # import a private key into the keychain
+```
+
+Rotating the key is a breaking change: already-installed builds trust the old `SUPublicEDKey`, so a
+new key only takes effect for users who first install a build carrying it. To rotate, generate a new
+key, ship a build with the new `SUPublicEDKey`, and keep signing with the matching private key.
+
+### Cutting a release
+
+```
+LUMEN_VERSION=0.2.0 ./scripts/release.sh
+```
+
+This builds and signs `Lumen.app` (with Sparkle embedded and nested-code-signed), produces
+`dist/Lumen-<version>.zip` (the Sparkle update enclosure) and `dist/Lumen-<version>.dmg` (the
+website download), then runs `generate_appcast` to sign the zip and update `./appcast.xml`. Enclosure
+URLs point at the GitHub Releases download path for the tag (`v<version>` by default; override with
+`LUMEN_RELEASE_TAG`/`LUMEN_RELEASE_OWNER`/`LUMEN_RELEASE_REPO`).
+
+Then, by hand (the script does not upload):
+
+1. Create the GitHub release for the tag and upload `dist/Lumen-<version>.zip` (and the `.dmg` for
+   the website).
+2. Commit and push the updated `appcast.xml`. It is served from
+   `https://raw.githubusercontent.com/raidel-a/lumen/main/appcast.xml`, which is the `SUFeedURL`
+   baked into the bundle (override at build time with `LUMEN_FEED_URL`).
+
+### Testing the update flow locally
+
+`scripts/dev/test-update.sh` runs the whole flow against the project's own dev instance only (bundle
+id `pro.lumen.Lumen.dev`, a dedicated support dir): it builds version N and N+1, serves a signed
+appcast for N+1 on `http://localhost`, launches N, and confirms it checks, downloads, verifies the
+EdDSA signature, installs, and relaunches as N+1 — then checks that the signing identity is unchanged
+across the update. It never touches `/Applications/Lumen.app` or any other running app.
+
 ## How the app is put together
 
 - **Status item and menu**: the menu bar shows the `sparkles.tv` SF Symbol as a template image, so
