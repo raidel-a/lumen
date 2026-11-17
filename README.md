@@ -47,6 +47,7 @@ you need isolation or a real bundle identity:
 ./scripts/dev/reset.sh               # clears the dev support dir
 ./scripts/dev/shot.sh --page virtual --screen agent --out /tmp/settings.png
 ./scripts/dev/smoke.sh               # pages, agent start/capture/stop, screen create/remove
+./scripts/dev/axcli.sh menu          # snapshot the dev menu-bar extra via agent-desktop
 ./scripts/check.sh --smoke           # tests, signed bundle, signature, smoke test
 ```
 
@@ -56,6 +57,10 @@ you need isolation or a real bundle identity:
 - `lumen settings [--page general|displays|virtual|about] [--screen invocation|agent|main|last]`
   opens a page through the control socket. `lumen settings state` reports the page and screen.
 - `scripts/dev/ax.swift` lists windows and presses or sets controls by title or description.
+- `scripts/dev/axcli.sh` drives the dev app through [agent-desktop](https://github.com/vercel-labs/agent-desktop),
+  which reads the accessibility tree as JSON with a ref per element (`menu`, `window`, or
+  `raw -- <args>`). It targets only "Lumen Dev". agent-desktop is pinned in `mise.toml`; run
+  `mise install`, then grant Accessibility via `mise exec -- agent-desktop permissions --guide`.
 - `lumen quit` asks the running app to quit cleanly, releasing virtual displays and agent
   browsers. `scripts/dev/stop.sh` uses it before falling back to the recorded PID.
 
@@ -165,6 +170,37 @@ badge in the row, persisted in the config. The warning matters because a monitor
 command switches away and some firmware cannot switch back over DDC - you may need the monitor's
 own controls. Successful switches from the menu are recorded the same way, so the list also
 learns from normal use.
+
+## Brightness keys and HUD
+
+Lumen can take over the Mac's brightness keys (F1/F2, or the dedicated sun keys) and drive
+brightness through its own pipeline, showing an on-screen indicator in place of the system's. It
+is off by default and lives under **Settings > General > Brightness Keys**.
+
+- **Use the brightness keys** installs a `CGEventTap` on the `NSSystemDefined` events macOS uses
+  for the brightness keys, reads each press, and - when it handles the key - swallows it so the
+  system's own brightness HUD does not also appear. The keys act on **the display under the
+  pointer**, so moving the mouse to a monitor and pressing the key adjusts that monitor. Built-in
+  panels go through DisplayServices; external monitors go through DDC, reusing the same 150 ms
+  write coalescing as the menu sliders, so holding a key ramps smoothly.
+- **Step** sets how far one press moves brightness: Coarse (1/8 of the range), Normal (1/16,
+  matching macOS) or Fine (1/32).
+- **Indicator** chooses the HUD look, matching FineTune's two styles:
+  - **Tahoe** - a 300x72 rounded pill in the top-right corner with a "Brightness" title, a sun
+    glyph, a capsule level bar and the percentage.
+  - **Classic** - a 200x200 pre-Tahoe panel centred near the bottom with a large sun glyph above a
+    row of sixteen segment tiles, no percentage.
+  Both use the system HUD material (`NSVisualEffectView` HUD-window) with a one-point border, fade
+  in and out, and appear on the screen under the pointer.
+- If the display under the pointer cannot be controlled (an external monitor with no readable
+  brightness or a failing DDC write), the HUD shows a **not-available** state - a sun with a warning
+  badge and a dimmed bar (or no filled tiles) - and nothing is changed; the key press is left for
+  the system to handle. Lumen does not silently redirect the keys to another display.
+
+The tap needs **Accessibility** permission (Privacy & Security > Accessibility). Turning the toggle
+on triggers the system prompt; if permission is missing the switch shows a note asking you to grant
+it and the tap stays inactive until you do. Permission is keyed to the app's signature, like the
+login item, so a stable signing identity keeps the grant across builds.
 
 ## Memory
 

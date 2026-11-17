@@ -248,6 +248,19 @@ fn handle(line: &str) -> String {
         "agent.status" => agent_status(&request),
         "agent.move" => agent_move(&request),
         "agent.screenshot" => agent_screenshot(&request),
+        "debug.hud" => {
+            let p = request.get("percent").and_then(Value::as_u64).unwrap_or(50) as u16;
+            let controllable = request.get("controllable").and_then(Value::as_bool).unwrap_or(true);
+            let style = request.get("style").and_then(Value::as_str).map(str::to_string);
+            let _ = on_main_value(move || {
+                if let Some(s) = style {
+                    let c = if s == "classic" { crate::config::HudStyle::Classic } else { crate::config::HudStyle::Tahoe };
+                    crate::with_model(|m| m.config.hud_style = c);
+                }
+                crate::hud::show(p.min(100), 100, controllable);
+            });
+            ok_value(json!({ "shown": p }))
+        }
         other => error(format!("unknown command {other}")),
     }
 }

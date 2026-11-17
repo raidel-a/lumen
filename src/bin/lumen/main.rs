@@ -7,6 +7,8 @@ mod cli;
 mod config;
 mod control;
 mod engine;
+mod hotkeys;
+mod hud;
 mod instance;
 mod log;
 mod login;
@@ -638,6 +640,9 @@ fn main() {
     control::serve();
 
     spawn_scan();
+
+    // Install the brightness-key event tap if the user enabled it and granted Accessibility.
+    hotkeys::refresh();
 
     unsafe { app.run() };
 }
