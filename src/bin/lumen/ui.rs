@@ -25,21 +25,20 @@ use objc2_app_kit::{
     NSPasteboard, NSPasteboardTypeString,
     NSPopUpButton, NSScreen, NSScrollView,
     NSSlider, NSSwitch, NSTextAlignment, NSTextField,
-    NSCellImagePosition, NSImageSymbolConfiguration,
     NSTickMarkPosition,
-    NSTitlePosition, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWorkspace,
+    NSTitlePosition, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem,
+    NSToolbarItemIdentifier, NSView,
+    NSWindow, NSWindowCollectionBehavior, NSWindowDelegate, NSWindowStyleMask, NSWindowToolbarStyle,
+    NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject,
+    MainThreadMarker, NSArray, NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject,
     NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
 };
 use std::cell::RefCell;
 
 const MIN_WIDTH: f64 = 880.0;
 const MIN_HEIGHT: f64 = 500.0;
-const TOOLBAR: f64 = 68.0;
 const MARGIN: f64 = 28.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,15 +50,6 @@ pub enum Page {
 }
 
 impl Page {
-    fn index(self) -> usize {
-        match self {
-            Page::General => 0,
-            Page::Displays => 1,
-            Page::Virtual => 2,
-            Page::About => 3,
-        }
-    }
-
     fn slug(self) -> &'static str {
         match self {
             Page::General => "general",
@@ -76,15 +66,6 @@ impl Page {
             "virtual" | "virtual-displays" => Some(Page::Virtual),
             "about" => Some(Page::About),
             _ => None,
-        }
-    }
-
-    fn from_row(row: isize) -> Self {
-        match row {
-            1 => Page::Displays,
-            2 => Page::Virtual,
-            3 => Page::About,
-            _ => Page::General,
         }
     }
 
@@ -129,8 +110,9 @@ pub struct Ui {
     host: Option<Retained<NSView>>,
     scroll: Option<Retained<NSScrollView>>,
     built_page: Option<Page>,
-    /// The toolbar tab buttons (icon above label), one per page, restyled on selection.
-    tabs: Vec<Retained<NSButton>>,
+    /// The native titlebar toolbar carrying the section tabs (icon above label), one selectable
+    /// item per page. The selection highlight is drawn by AppKit.
+    toolbar: Option<Retained<NSToolbar>>,
     display_list: Option<Retained<NSTableView>>,
     suppress_selection: bool,
     login_note: Option<String>,
@@ -164,7 +146,7 @@ impl Default for Ui {
             host: None,
             scroll: None,
             built_page: None,
-            tabs: Vec::new(),
+            toolbar: None,
             display_list: None,
             suppress_selection: false,
             login_note: None,
@@ -194,6 +176,7 @@ thread_local! {
     static UI: RefCell<Ui> = RefCell::new(Ui::default());
     static ACTIONS: RefCell<Option<Retained<Actions>>> = const { RefCell::new(None) };
     static SOURCE: RefCell<Option<Retained<SourceList>>> = const { RefCell::new(None) };
+    static TOOLBAR_DELEGATE: RefCell<Option<Retained<SettingsToolbar>>> = const { RefCell::new(None) };
     /// A closed window waiting for the run loop to finish the close before it is released.
     static STALE: RefCell<Option<Retained<NSWindow>>> = const { RefCell::new(None) };
 }
@@ -1797,61 +1780,30 @@ fn build_page(host: &NSView, model: &Model, page: Page) {
     crate::preview::set_thumbnails_visible(page == Page::Virtual);
 }
 
-/// A toolbar tab: an SF Symbol icon above its label, borderless, carrying its page index as `tag`.
-/// Selection styling is applied separately by `style_tabs`.
-fn tab_button(section: Page, index: isize) -> Retained<NSButton> {
+/// A native titlebar toolbar carrying the section tabs. `NSWindowToolbarStyle::Preference` renders
+/// each item as a large SF Symbol above its label with the native rounded selection highlight, the
+/// way System Settings draws its panes.
+fn build_settings_toolbar(window: &NSWindow) {
     unsafe {
-        let button = NSButton::buttonWithTitle_target_action(
-            &NSString::from_str(section.tab_label()),
-            None,
-            None,
-            mtm(),
+        let delegate = settings_toolbar();
+        let toolbar = NSToolbar::initWithIdentifier(
+            mtm().alloc(),
+            &NSString::from_str("lumen.settings.tabs"),
         );
-        button.setBordered(false);
-        button.setImagePosition(NSCellImagePosition::NSImageAbove);
-        button.setImageHugsTitle(true);
-        button.setImageScaling(objc2_app_kit::NSImageScaling::NSImageScaleNone);
-        button.setFont(Some(&NSFont::systemFontOfSize_weight(11.0, NSFontWeightRegular)));
-        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
-            &NSString::from_str(section.symbol()),
-            None,
-        ) {
-            // A slightly larger, medium-weight glyph reads as the primary element of the tab.
-            let config = NSImageSymbolConfiguration::configurationWithPointSize_weight_scale(
-                18.0,
-                NSFontWeightRegular,
-                objc2_app_kit::NSImageSymbolScale::Medium,
-            );
-            let image = image.imageWithSymbolConfiguration(&config).unwrap_or(image);
-            // Template rendering makes contentTintColor recolour the whole glyph uniformly. Without
-            // it, symbols drawn with inner detail (info.circle) keep their own colour and only the
-            // label follows the selection tint.
-            image.setTemplate(true);
-            button.setImage(Some(&image));
-        }
-        tag(&button, index);
-        wire(&button, sel!(selectPage:));
-        button
-    }
-}
-
-/// Highlights the selected toolbar tab: accent-tinted icon and label, the rest drawn in the
-/// secondary label colour. Called on build and whenever the page changes.
-fn style_tabs(buttons: &[Retained<NSButton>], selected: usize) {
-    unsafe {
-        for (index, button) in buttons.iter().enumerate() {
-            let tint = if index == selected {
-                NSColor::controlAccentColor()
-            } else {
-                NSColor::secondaryLabelColor()
-            };
-            button.setContentTintColor(Some(&tint));
-        }
+        toolbar.setDisplayMode(NSToolbarDisplayMode::IconAndLabel);
+        toolbar.setAllowsUserCustomization(false);
+        toolbar.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        window.setToolbar(Some(&toolbar));
+        let page = UI.with(|ui| ui.borrow().page);
+        toolbar.setSelectedItemIdentifier(Some(&NSString::from_str(page.slug())));
+        UI.with(|ui| ui.borrow_mut().toolbar = Some(toolbar));
     }
 }
 
 fn build_chrome(window: &NSWindow) {
     unsafe {
+        build_settings_toolbar(window);
+
         let Some(content) = window.contentView() else {
             return;
         };
@@ -1860,70 +1812,13 @@ fn build_chrome(window: &NSWindow) {
             subview.removeFromSuperview();
         }
 
-        let page = UI.with(|ui| ui.borrow().page);
-
-        // A toolbar strip across the top carries the section tabs, Logic Pro style: no sidebar, the
-        // sections sit in one row and the selected page fills the body below.
-        let bar = NSVisualEffectView::initWithFrame(
-            mtm().alloc(),
-            NSRect::new(
-                NSPoint::new(0.0, bounds.size.height - TOOLBAR),
-                NSSize::new(bounds.size.width, TOOLBAR),
-            ),
-        );
-        bar.setMaterial(NSVisualEffectMaterial::HeaderView);
-        bar.setBlendingMode(NSVisualEffectBlendingMode::BehindWindow);
-        bar.setState(NSVisualEffectState::Active);
-        bar.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewMinYMargin,
-        );
-        content.addSubview(&bar);
-
-        let tabs = NSStackView::new(mtm());
-        tabs.setOrientation(NSUserInterfaceLayoutOrientation::Horizontal);
-        tabs.setAlignment(NSLayoutAttribute::CenterY);
-        tabs.setSpacing(2.0);
-        tabs.setDistribution(NSStackViewDistribution::EqualSpacing);
-        auto_layout(&tabs);
-        bar.addSubview(&tabs);
-        tabs.centerXAnchor().constraintEqualToAnchor(&bar.centerXAnchor()).setActive(true);
-        tabs.centerYAnchor().constraintEqualToAnchor(&bar.centerYAnchor()).setActive(true);
-
-        let mut buttons = Vec::with_capacity(Page::ALL.len());
-        for (index, section) in Page::ALL.iter().enumerate() {
-            let button = tab_button(*section, index as isize);
-            tabs.addArrangedSubview(&button);
-            button.widthAnchor().constraintEqualToConstant(76.0).setActive(true);
-            buttons.push(button);
-        }
-        style_tabs(&buttons, page.index());
-        UI.with(|ui| ui.borrow_mut().tabs = buttons);
-
-        let line = NSBox::initWithFrame(
-            mtm().alloc(),
-            NSRect::new(
-                NSPoint::new(0.0, bounds.size.height - TOOLBAR - 1.0),
-                NSSize::new(bounds.size.width, 1.0),
-            ),
-        );
-        line.setBoxType(NSBoxType::NSBoxCustom);
-        line.setTitlePosition(NSTitlePosition::NSNoTitle);
-        line.setBorderWidth(0.0);
-        line.setCornerRadius(0.0);
-        line.setFillColor(&NSColor::separatorColor());
-        line.setBorderColor(&NSColor::separatorColor());
-        line.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewMinYMargin,
-        );
-        content.addSubview(&line);
-
+        // The tabs live in the titlebar toolbar now, so the page content fills the whole content
+        // view.
         let host = NSView::initWithFrame(
             mtm().alloc(),
             NSRect::new(
                 NSPoint::new(0.0, 0.0),
-                NSSize::new(bounds.size.width, bounds.size.height - TOOLBAR - 1.0),
+                NSSize::new(bounds.size.width, bounds.size.height),
             ),
         );
         host.setAutoresizingMask(
@@ -2257,11 +2152,13 @@ pub fn reposition() {
 }
 
 /// Keeps the toolbar's selected tab in step with the active page, for the paths that change the
-/// page without going through the segmented control (the control socket and the saved page).
+/// page without going through the toolbar (the control socket and the saved page).
 fn sync_tabs(page: Page) {
-    let buttons = UI.with(|ui| ui.borrow().tabs.clone());
-    if !buttons.is_empty() {
-        style_tabs(&buttons, page.index());
+    let toolbar = UI.with(|ui| ui.borrow().toolbar.clone());
+    if let Some(toolbar) = toolbar {
+        unsafe {
+            toolbar.setSelectedItemIdentifier(Some(&NSString::from_str(page.slug())));
+        }
     }
 }
 
@@ -2353,6 +2250,7 @@ fn create_window(width: f64, height: f64) -> Retained<NSWindow> {
             false,
         );
         window.setTitle(&NSString::from_str("Lumen Settings"));
+        window.setToolbarStyle(NSWindowToolbarStyle::Preference);
         window.setReleasedWhenClosed(false);
         window.setContentMinSize(NSSize::new(MIN_WIDTH, MIN_HEIGHT));
         window.setCollectionBehavior(NSWindowCollectionBehavior::MoveToActiveSpace);
@@ -2531,6 +2429,95 @@ fn source_list() -> Retained<SourceList> {
             *slot = Some(unsafe { msg_send_id![super(object), init] });
         }
         slot.clone().expect("source list")
+    })
+}
+
+// The titlebar toolbar's delegate. It serves one selectable item per page, each a page slug
+// identifier with an SF Symbol above the short label. AppKit draws the preference-style selection
+// highlight for whichever item is selected.
+declare_class!(
+    struct SettingsToolbar;
+
+    unsafe impl ClassType for SettingsToolbar {
+        type Super = NSObject;
+        type Mutability = mutability::MainThreadOnly;
+        const NAME: &'static str = "LumenSettingsToolbar";
+    }
+
+    impl DeclaredClass for SettingsToolbar {
+        type Ivars = ();
+    }
+
+    unsafe impl NSObjectProtocol for SettingsToolbar {}
+
+    unsafe impl NSToolbarDelegate for SettingsToolbar {
+        #[method_id(toolbarDefaultItemIdentifiers:)]
+        fn default_items(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+            toolbar_item_identifiers()
+        }
+
+        #[method_id(toolbarAllowedItemIdentifiers:)]
+        fn allowed_items(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+            toolbar_item_identifiers()
+        }
+
+        #[method_id(toolbarSelectableItemIdentifiers:)]
+        fn selectable_items(&self, _toolbar: &NSToolbar) -> Retained<NSArray<NSToolbarItemIdentifier>> {
+            toolbar_item_identifiers()
+        }
+
+        #[method_id(toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:)]
+        fn item_for_identifier(
+            &self,
+            _toolbar: &NSToolbar,
+            identifier: &NSToolbarItemIdentifier,
+            _inserted: bool,
+        ) -> Option<Retained<NSToolbarItem>> {
+            make_toolbar_item(identifier)
+        }
+    }
+);
+
+/// Builds the toolbar item for a page slug identifier: an SF Symbol above the short label, wired to
+/// `selectPage:` on the Actions target.
+fn make_toolbar_item(identifier: &NSToolbarItemIdentifier) -> Option<Retained<NSToolbarItem>> {
+    let slug = identifier.to_string();
+    let page = Page::from_slug(&slug)?;
+    unsafe {
+        let item = NSToolbarItem::initWithItemIdentifier(mtm().alloc(), identifier);
+        item.setLabel(&NSString::from_str(page.tab_label()));
+        item.setPaletteLabel(&NSString::from_str(page.tab_label()));
+        if let Some(image) = NSImage::imageWithSystemSymbolName_accessibilityDescription(
+            &NSString::from_str(page.symbol()),
+            None,
+        ) {
+            // Template rendering lets AppKit tint the glyph with the selection highlight.
+            image.setTemplate(true);
+            item.setImage(Some(&image));
+        }
+        if let Some(target) = target() {
+            item.setTarget(Some(&target));
+            item.setAction(Some(sel!(selectPage:)));
+        }
+        Some(item)
+    }
+}
+
+/// The four toolbar item identifiers (page slugs), in `Page::ALL` order.
+fn toolbar_item_identifiers() -> Retained<NSArray<NSToolbarItemIdentifier>> {
+    let ids: Vec<Retained<NSString>> =
+        Page::ALL.iter().map(|page| NSString::from_str(page.slug())).collect();
+    NSArray::from_vec(ids)
+}
+
+fn settings_toolbar() -> Retained<SettingsToolbar> {
+    TOOLBAR_DELEGATE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            let object = mtm().alloc::<SettingsToolbar>().set_ivars(());
+            *slot = Some(unsafe { msg_send_id![super(object), init] });
+        }
+        slot.clone().expect("settings toolbar")
     })
 }
 
@@ -2897,12 +2884,20 @@ declare_class!(
         fn noop(&self, _sender: *mut AnyObject) {}
 
         #[method(selectPage:)]
-        fn select_page(&self, sender: *mut AnyObject) {
-            let index = sender_tag(sender);
-            if index < 0 {
+        fn select_page(&self, _sender: *mut AnyObject) {
+            // The native toolbar has already moved its selection; resolve the page from the
+            // selected item identifier (its slug) rather than from a control tag.
+            let toolbar = UI.with(|ui| ui.borrow().toolbar.clone());
+            let Some(toolbar) = toolbar else {
                 return;
-            }
-            let page = Page::from_row(index);
+            };
+            let slug = unsafe { toolbar.selectedItemIdentifier() };
+            let Some(slug) = slug else {
+                return;
+            };
+            let Some(page) = Page::from_slug(&slug.to_string()) else {
+                return;
+            };
             if UI.with(|ui| ui.borrow().page) == page {
                 return;
             }
