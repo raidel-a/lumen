@@ -126,9 +126,28 @@ fn mtm() -> MainThreadMarker {
     unsafe { MainThreadMarker::new_unchecked() }
 }
 
-/// White at an alpha, for bars and tiles.
-fn white(alpha: f64) -> Retained<NSColor> {
-    unsafe { NSColor::colorWithWhite_alpha(1.0, alpha) }
+/// An appearance-aware fill for the HUD's bar, tiles and glyph: white at `alpha` on a dark panel,
+/// black at `alpha` on a light one. The HUD material (`HUDWindow`) tracks the system appearance,
+/// so a fixed white fill is nearly invisible in light mode; this resolves per effective appearance
+/// like `hud_border`, keeping the content legible in both.
+fn hud_fill(alpha: f64) -> Retained<NSColor> {
+    use block2::RcBlock;
+    unsafe {
+        let provider = RcBlock::new(
+            move |appearance: std::ptr::NonNull<NSAppearance>| -> std::ptr::NonNull<NSColor> {
+                let appearance = appearance.as_ref();
+                let names = NSArray::arrayWithObject(NSAppearanceNameDarkAqua);
+                let is_dark = appearance
+                    .bestMatchFromAppearancesWithNames(&names)
+                    .map(|name| &*name == NSAppearanceNameDarkAqua)
+                    .unwrap_or(false);
+                let white = if is_dark { 1.0 } else { 0.0 };
+                let color = NSColor::colorWithWhite_alpha(white, alpha);
+                std::ptr::NonNull::new(Retained::into_raw(color)).unwrap()
+            },
+        );
+        NSColor::colorWithName_dynamicProvider(None, &provider)
+    }
 }
 
 /// FineTune's `hudBorder` design token: an appearance-aware stroke that resolves to white @ 0.08
@@ -239,7 +258,7 @@ impl Hud {
             }
             // FineTune tints the glyph with `hudTileActive` (.primary @ 0.7), not full white.
             let tint = if controllable {
-                white(TILE_ACTIVE_ALPHA)
+                hud_fill(TILE_ACTIVE_ALPHA)
             } else {
                 NSColor::secondaryLabelColor()
             };
@@ -262,7 +281,7 @@ impl Hud {
                 NSPoint::new(0.0, 0.0),
                 NSSize::new(fill_width, TAHOE_BAR_HEIGHT),
             ));
-            fill.setFillColor(&white(if spec.controllable { 1.0 } else { 0.35 }));
+            fill.setFillColor(&hud_fill(if spec.controllable { 1.0 } else { 0.35 }));
             fill.setHidden(fill_width <= 0.0);
 
             if let Some(label) = self.label.as_ref() {
@@ -284,9 +303,9 @@ impl Hud {
         };
         for (index, tile) in self.tiles.iter().enumerate() {
             let color = if index < filled {
-                white(TILE_ACTIVE_ALPHA)
+                hud_fill(TILE_ACTIVE_ALPHA)
             } else {
-                white(TILE_INACTIVE_ALPHA)
+                hud_fill(TILE_INACTIVE_ALPHA)
             };
             unsafe { tile.setFillColor(&color) };
         }
@@ -424,7 +443,7 @@ fn make_glyph(point_size: f64, box_frame: NSRect) -> Retained<NSImageView> {
         let glyph = NSImageView::new(mtm());
         glyph.setFrame(box_frame);
         glyph.setImageScaling(NSImageScaling::NSImageScaleProportionallyUpOrDown);
-        glyph.setContentTintColor(Some(&white(TILE_ACTIVE_ALPHA)));
+        glyph.setContentTintColor(Some(&hud_fill(TILE_ACTIVE_ALPHA)));
         // Point size + weight only, no scale: FineTune uses `.font(.system(size:weight:))`, so a
         // `.large` symbol scale would oversize the glyph.
         let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
@@ -508,12 +527,12 @@ fn build_tahoe() -> Hud {
                 NSPoint::new(bar_x, bar_y),
                 NSSize::new(track_width, TAHOE_BAR_HEIGHT),
             ),
-            &white(0.25),
+            &hud_fill(0.25),
             TAHOE_BAR_HEIGHT / 2.0,
         );
         let fill = solid_box(
             NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, TAHOE_BAR_HEIGHT)),
-            &white(1.0),
+            &hud_fill(1.0),
             TAHOE_BAR_HEIGHT / 2.0,
         );
         track.addSubview(&fill);
@@ -558,7 +577,7 @@ fn build_classic() -> Hud {
             let x = start_x + index as f64 * (CLASSIC_TILE + CLASSIC_TILE_SPACING);
             let tile = solid_box(
                 NSRect::new(NSPoint::new(x, tile_y), NSSize::new(CLASSIC_TILE, CLASSIC_TILE)),
-                &white(TILE_INACTIVE_ALPHA),
+                &hud_fill(TILE_INACTIVE_ALPHA),
                 1.0,
             );
             effect.addSubview(&tile);
