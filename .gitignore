@@ -10,3 +10,6 @@
 
 # Local Kiro agent/session state
 /.kiro
+
+# Agent task/session scratch metadata (not product code)
+/.agents
