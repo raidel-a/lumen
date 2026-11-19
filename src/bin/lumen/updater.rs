@@ -15,12 +15,25 @@
 mod imp {
     use objc2_foundation::MainThreadMarker;
 
-    // Flat C surface exported by native/lumen_sparkle.m. All three must be called on the main
+    // Flat C surface exported by native/lumen_sparkle.m. All must be called on the main
     // thread, which the safe wrappers below guarantee.
     unsafe extern "C" {
         fn lumen_updater_start(background_checks: bool);
         fn lumen_updater_check_now();
         fn lumen_updater_can_check() -> bool;
+        fn lumen_updater_set_available_callback(callback: Option<extern "C" fn()>);
+        fn lumen_updater_available_version(buf: *mut core::ffi::c_char, len: usize) -> bool;
+    }
+
+    /// Called by Sparkle (via the shim) on the main thread when the update-available state changes.
+    /// Rebuild the menu bar so the "Update available" entry appears or disappears.
+    extern "C" fn on_available_changed() {
+        let version = available_version();
+        match &version {
+            Some(v) => crate::log::info(format!("self-update: version {v} available")),
+            None => crate::log::info("self-update: no update available"),
+        }
+        crate::status::rebuild_menu();
     }
 
     /// Create and start Sparkle's updater. `background` enables the automatic background-check
@@ -29,7 +42,10 @@ mod imp {
         // Starting the updater touches AppKit; marshal onto the main thread.
         crate::on_main(move || {
             // Safety: dispatched onto the main thread, so Sparkle's main-thread requirement holds.
-            unsafe { lumen_updater_start(background) };
+            unsafe {
+                lumen_updater_set_available_callback(Some(on_available_changed));
+                lumen_updater_start(background);
+            }
             crate::log::info("self-update: updater started");
         });
     }
@@ -52,6 +68,27 @@ mod imp {
         // Safety: confirmed to be on the main thread above.
         unsafe { lumen_updater_can_check() }
     }
+
+    /// The short version string of an available update, or `None` when none is known. Main-thread
+    /// only, matching Sparkle's state access.
+    pub fn available_version() -> Option<String> {
+        if MainThreadMarker::new().is_none() {
+            return None;
+        }
+        let mut buf = [0_i8; 64];
+        // Safety: on the main thread; buffer length passed honestly.
+        let has = unsafe { lumen_updater_available_version(buf.as_mut_ptr(), buf.len()) };
+        if !has {
+            return None;
+        }
+        let cstr = unsafe { core::ffi::CStr::from_ptr(buf.as_ptr()) };
+        let text = cstr.to_string_lossy().into_owned();
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    }
 }
 
 #[cfg(not(feature = "sparkle"))]
@@ -70,9 +107,14 @@ mod imp {
     pub fn can_check() -> bool {
         false
     }
+
+    /// No update is ever available without the feature.
+    pub fn available_version() -> Option<String> {
+        None
+    }
 }
 
-pub use imp::{can_check, check_now, start};
+pub use imp::{available_version, can_check, check_now, start};
 
 #[cfg(test)]
 mod tests {

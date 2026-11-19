@@ -191,6 +191,20 @@ fn slider_item(
     }
 }
 
+/// Rebuilds the status-bar menu now from the stored menu and target, so a state change that
+/// happens while the menu is closed (e.g. Sparkle finding an update) is reflected the next time
+/// it opens, and any live "update available" entry appears or disappears immediately.
+#[cfg(feature = "sparkle")]
+pub fn rebuild_menu() {
+    let (menu, actions) = (
+        MENU.with(|slot| slot.borrow().clone()),
+        crate::ui::target(),
+    );
+    if let (Some(menu), Some(actions)) = (menu, actions) {
+        fill(&menu, &actions);
+    }
+}
+
 pub fn fill(menu: &NSMenu, actions: &Actions) {
     crate::refresh_builtin_brightness();
     let model: Model = crate::with_model(|model| model.snapshot());
@@ -273,13 +287,17 @@ pub fn fill(menu: &NSMenu, actions: &Actions) {
         menu.addItem(&separator());
         menu.addItem(&action_item("Settings…", menu::SETTINGS, false, true, actions));
         menu.addItem(&action_item("Refresh", menu::REFRESH, false, true, actions));
-        menu.addItem(&action_item(
-            "Check for Updates…",
-            menu::CHECK_UPDATES,
-            false,
-            crate::updater::can_check(),
-            actions,
-        ));
+        // "Check for Updates" lives on the Settings → About page now. The menu bar only surfaces
+        // updates when one is actually available, as an actionable install entry.
+        if let Some(version) = crate::updater::available_version() {
+            menu.addItem(&action_item(
+                &format!("Update to {version} available…"),
+                menu::CHECK_UPDATES,
+                false,
+                true,
+                actions,
+            ));
+        }
         menu.addItem(&action_item("Quit Lumen", menu::QUIT, false, true, actions));
     }
 }
