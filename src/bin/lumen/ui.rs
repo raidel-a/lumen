@@ -503,14 +503,21 @@ unsafe fn auto_paragraph(text: &str, size: f64, color: &NSColor) -> Retained<NST
     field
 }
 
-unsafe fn paragraph_row(text: &str, size: f64, color: &NSColor, width: f64) -> Retained<NSView> {
+unsafe fn paragraph_row(text: &str, size: f64, color: &NSColor, _width: f64) -> Retained<NSView> {
     let row = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
     auto_layout(&row);
-    // Wrapping only. A fixed row width here makes the page's document exactly as wide as the
-    // window's content area, and once the vertical scroller takes its 17 points the overflow feeds
-    // back into the window, which grows on every rebuild.
+    // Wrapping only. Do NOT give the row (or the body) a fixed width: a fixed width here makes the
+    // page's document exactly as wide as the window's content area, and once the vertical scroller
+    // takes its 17 points the overflow feeds back into the window, which grows on every rebuild.
     let body = auto_paragraph(text, size, color);
-    body.setPreferredMaxLayoutWidth(width);
+    // Fill the row from the left and wrap to the actual frame width. The leading(0)+trailing(0)
+    // pins below are required; dropping the label's horizontal content hugging/compression lets
+    // those pins win so the label stretches to the full row width instead of hugging its text
+    // intrinsic width (which would leave it centered/right under a Width-aligned Fill stack).
+    // Resize triggers a full rebuild, so frame-driven wrapping replaces a frozen
+    // preferredMaxLayoutWidth and the label always wraps to its real frame.
+    body.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+    body.setContentCompressionResistancePriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
     row.addSubview(&body);
     pin_edges(&body, &row, 0.0, 0.0, 0.0, 0.0);
     row
@@ -673,7 +680,13 @@ unsafe fn row_text_button(theme: &Theme, title: &str, detail: &str, button_title
     let detail = auto_label(detail, 11.0, NSFontWeightRegular, &theme.secondary);
     let control = button(button_title, &row, NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)), true, action);
     auto_layout(&control);
-    fix_width(&control, 76.0);
+    // Minimum width keeps short labels ("Open") a comfortable size while longer ones
+    // ("Check for Updates…") grow to fit instead of truncating.
+    control.widthAnchor().constraintGreaterThanOrEqualToConstant(76.0).setActive(true);
+    control.setContentHuggingPriority_forOrientation(
+        objc2_app_kit::NSLayoutPriorityDefaultHigh,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
     fix_height(&control, 24.0);
     row.addSubview(&title);
     row.addSubview(&detail);
@@ -1078,7 +1091,12 @@ unsafe fn build_virtual(host: &NSView, model: &Model, theme: &Theme) {
             11.0,
             &theme.secondary,
         );
-        detail.setPreferredMaxLayoutWidth(host.bounds().size.width - MARGIN * 2.0 - 32.0);
+        // Fill the card from the left and wrap to the frame. Dropping the horizontal content
+        // hugging/compression lets the required leading/trailing pins win so the label stretches to
+        // the full row width; frame-driven wrapping (resize rebuilds) replaces a frozen
+        // preferredMaxLayoutWidth that would otherwise leave the text centered/right.
+        detail.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+        detail.setContentCompressionResistancePriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
         row.addSubview(&title);
         row.addSubview(&detail);
         title.leadingAnchor().constraintEqualToAnchor(&row.leadingAnchor()).setActive(true);
@@ -1609,9 +1627,15 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
 unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
     let (scroll, stack) = page_stack(host);
 
-    let header = hstack();
-    header.setAlignment(NSLayoutAttribute::Top);
-    header.setSpacing(16.0);
+    // The header is a plain container with explicit anchors rather than an hstack: NSStackView's
+    // GravityAreas distribution will not stretch a single column to fill, so the text block would
+    // hug its widest short label ("Lumen") and wrap the description into a narrow column (or, if
+    // pinned trailing-only, shove the whole block to the right edge). Pinning the text column
+    // leading = icon.trailing+16 and trailing = header.trailing gives it the full remaining width,
+    // so the description wraps to the real window width. The header is a Width-aligned arranged
+    // subview of the page stack, so no fixed width is introduced.
+    let header = NSView::initWithFrame(mtm().alloc(), NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)));
+    auto_layout(&header);
     let icon = NSImageView::new(mtm());
     auto_layout(&icon);
     fix_width(&icon, 72.0);
@@ -1619,7 +1643,9 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
     if let Some(image) = NSApplication::sharedApplication(mtm()).applicationIconImage() {
         icon.setImage(Some(&image));
     }
-    header.addArrangedSubview(&icon);
+    header.addSubview(&icon);
+    icon.leadingAnchor().constraintEqualToAnchor(&header.leadingAnchor()).setActive(true);
+    icon.topAnchor().constraintEqualToAnchor(&header.topAnchor()).setActive(true);
 
     let text = vstack();
     text.setAlignment(NSLayoutAttribute::Leading);
@@ -1636,12 +1662,58 @@ unsafe fn build_about(host: &NSView, model: &Model, theme: &Theme) {
         12.0,
         &theme.secondary,
     );
-    description.setPreferredMaxLayoutWidth(host.bounds().size.width - MARGIN * 2.0 - 88.0);
+    // Fill the text column from the left and wrap to the actual frame width. Dropping the
+    // horizontal content hugging/compression (instead of freezing a preferredMaxLayoutWidth) lets
+    // the column width drive the wrap, so the description reflows at any window size. Resize
+    // triggers a full rebuild, so no fixed width is needed; adding one would risk the document
+    // exceeding the content area and feeding the scroller width back into the window.
+    description.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+    description.setContentCompressionResistancePriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
     text.addArrangedSubview(&description);
-    header.addArrangedSubview(&text);
+    header.addSubview(&text);
+    text.leadingAnchor().constraintEqualToAnchor_constant(&icon.trailingAnchor(), 16.0).setActive(true);
+    text.trailingAnchor().constraintEqualToAnchor(&header.trailingAnchor()).setActive(true);
+    text.topAnchor().constraintEqualToAnchor(&header.topAnchor()).setActive(true);
+    // The header's height is the taller of the icon and the text column; pin the bottom to both so
+    // the container hugs its content and the page stack lays the next section below it.
+    header.bottomAnchor().constraintGreaterThanOrEqualToAnchor(&icon.bottomAnchor()).setActive(true);
+    header.bottomAnchor().constraintEqualToAnchor(&text.bottomAnchor()).setActive(true);
     hug_height(&header);
     stack.addArrangedSubview(&header);
+    // NSStackView Width alignment does not force this header to the stack's full width when its
+    // content offers no horizontal resistance (the wrapping description has hugging/compression at
+    // 1.0), so the header collapses to its content and gravity parks it on the trailing side.
+    // Pin the header's leading and trailing to the stack to give it the full content width; the
+    // icon then sits at the left and the text column fills to the right, wrapping the description
+    // to the real window width. No fixed width is introduced, so the rebuild-on-resize invariant
+    // (document never wider than the content area) holds.
+    header.leadingAnchor().constraintEqualToAnchor(&stack.leadingAnchor()).setActive(true);
+    header.trailingAnchor().constraintEqualToAnchor(&stack.trailingAnchor()).setActive(true);
     stack.setCustomSpacing_afterView(28.0, &header);
+
+    // Updates: "Check for Updates" moved here from the menu bar. The status line reflects whether
+    // Sparkle currently knows of an available version.
+    if crate::updater::can_check() || cfg!(feature = "sparkle") {
+        let updates_heading = section_heading("Updates", theme);
+        stack.addArrangedSubview(&updates_heading);
+        stack.setCustomSpacing_afterView(8.0, &updates_heading);
+        let status = match crate::updater::available_version() {
+            Some(version) => format!("Update to {version} is available"),
+            None => format!("Lumen {} is up to date", crate::version_string()),
+        };
+        let updates = group_container(theme, vec![
+            row_text_button(
+                theme,
+                "Software Update",
+                &status,
+                "Check for Updates…",
+                sel!(checkUpdates:),
+            ),
+        ]);
+        hug_height(&updates);
+        stack.addArrangedSubview(&updates);
+        stack.setCustomSpacing_afterView(24.0, &updates);
+    }
 
     let places_heading = section_heading("Places", theme);
     stack.addArrangedSubview(&places_heading);
@@ -1813,7 +1885,9 @@ fn build_chrome(window: &NSWindow) {
         }
 
         // The tabs live in the titlebar toolbar now, so the page content fills the whole content
-        // view.
+        // view. Pin the host with Auto Layout (not an autoresizing mask): the scroll view inside
+        // it is constraint-based, and mixing an autoresizing-mask parent with constraint children
+        // makes the content drift and clip on live resize.
         let host = NSView::initWithFrame(
             mtm().alloc(),
             NSRect::new(
@@ -1821,11 +1895,12 @@ fn build_chrome(window: &NSWindow) {
                 NSSize::new(bounds.size.width, bounds.size.height),
             ),
         );
-        host.setAutoresizingMask(
-            NSAutoresizingMaskOptions::NSViewWidthSizable
-                | NSAutoresizingMaskOptions::NSViewHeightSizable,
-        );
+        auto_layout(&host);
         content.addSubview(&host);
+        host.leadingAnchor().constraintEqualToAnchor(&content.leadingAnchor()).setActive(true);
+        host.trailingAnchor().constraintEqualToAnchor(&content.trailingAnchor()).setActive(true);
+        host.topAnchor().constraintEqualToAnchor(&content.topAnchor()).setActive(true);
+        host.bottomAnchor().constraintEqualToAnchor(&content.bottomAnchor()).setActive(true);
         UI.with(|ui| ui.borrow_mut().host = Some(host));
     }
 }
@@ -2218,6 +2293,18 @@ fn restore_scroll_offset(offset: f64) {
         clip.scrollToPoint(point);
         scroll.reflectScrolledClipView(&clip);
     }
+}
+
+/// Whether `window` is the live settings window (not a preview or other app window). Compares by
+/// pointer identity against the window held in `UI`.
+fn is_settings_window(window: &NSWindow) -> bool {
+    UI.with(|ui| {
+        ui.borrow()
+            .window
+            .as_ref()
+            .map(|settings| std::ptr::eq(&**settings as *const NSWindow, window as *const NSWindow))
+            .unwrap_or(false)
+    })
 }
 
 pub fn rebuild_if_open() {
@@ -3436,6 +3523,11 @@ declare_class!(
             }
         }
 
+        #[method(checkUpdates:)]
+        fn check_updates(&self, _sender: *mut AnyObject) {
+            crate::updater::check_now();
+        }
+
         #[method(deleteCaptures:)]
         fn delete_captures(&self, _sender: *mut AnyObject) {
             confirm(
@@ -3494,6 +3586,35 @@ declare_class!(
     }
 
     unsafe impl NSWindowDelegate for Actions {
+        // Wrapping text (`paragraph_row`) and the Displays detail pane freeze their layout width at
+        // build time via `setPreferredMaxLayoutWidth`, so a resized window leaves that text clipped
+        // or short until the page is rebuilt. Rebuild on resize to reflow it. During a live drag,
+        // skip the per-frame rebuild (Auto Layout already stretches the host, scroll view and
+        // frames live) and do a single rebuild when the drag ends, so dragging stays smooth.
+        #[method(windowDidResize:)]
+        fn window_did_resize(&self, notification: &NSNotification) {
+            let Some(object) = (unsafe { notification.object() }) else {
+                return;
+            };
+            let resized = unsafe { &*(&*object as *const AnyObject as *const NSWindow) };
+            if !is_settings_window(resized) || unsafe { resized.inLiveResize() } {
+                return;
+            }
+            rebuild_if_open();
+        }
+
+        #[method(windowDidEndLiveResize:)]
+        fn window_did_end_live_resize(&self, notification: &NSNotification) {
+            let Some(object) = (unsafe { notification.object() }) else {
+                return;
+            };
+            let resized = unsafe { &*(&*object as *const AnyObject as *const NSWindow) };
+            if !is_settings_window(resized) {
+                return;
+            }
+            rebuild_if_open();
+        }
+
         #[method(windowDidChangeOcclusionState:)]
         fn window_did_change_occlusion_state(&self, notification: &NSNotification) {
             if let Some(object) = unsafe { notification.object() } {
@@ -3513,12 +3634,7 @@ declare_class!(
                 crate::preview::window_closed(closing);
                 return;
             }
-            let settings = UI.with(|ui| ui.borrow().window.clone());
-            let is_settings = settings
-                .as_ref()
-                .map(|settings| std::ptr::eq(&**settings as *const NSWindow, closing as *const NSWindow))
-                .unwrap_or(false);
-            if !is_settings {
+            if !is_settings_window(closing) {
                 // Some other window this app owns closed; it is not the settings window.
                 return;
             }
