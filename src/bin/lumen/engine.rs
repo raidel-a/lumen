@@ -23,6 +23,10 @@ pub struct DisplayEntry {
     pub contrast: Option<(u16, u16)>,
     pub volume: Option<(u16, u16)>,
     pub muted: Option<bool>,
+    /// True when one or more controls here came from the previous scan because this scan could
+    /// not read them. DDC drops replies around input switches, and losing the whole slider because
+    /// of one missed packet makes the display look unsupported.
+    pub controls_stale: bool,
     /// What the monitor reports for VCP 0x60, when the firmware returns something valid.
     pub current_input: Option<u16>,
     /// The first DDC reads that failed, for the diagnostics row in Settings.
@@ -75,6 +79,7 @@ pub fn scan() -> Vec<DisplayEntry> {
             contrast,
             volume,
             muted,
+            controls_stale: false,
             current_input,
             ddc_error,
         });
@@ -118,6 +123,7 @@ fn scan_builtin(displays: &mut Vec<DisplayEntry>) {
             contrast: None,
             volume: None,
             muted: None,
+            controls_stale: false,
             current_input: None,
             ddc_error,
         });
@@ -209,6 +215,31 @@ pub fn switch(display_id: u32, input: &InputCode) -> SwitchOutcome {
         sent: false,
         rejected,
     }
+}
+
+/// The scan to run after a switch.
+///
+/// A confirmed switch returns as soon as the display leaves the Mac, which can be the start of a
+/// two-second link retrain. Scanning then produces an empty display list and removes the monitor
+/// from the menu until some later scan. Waiting for the display to come back first keeps the menu
+/// stable and gives DDC a moment to answer again.
+pub fn scan_after_switch(display_id: u32, switched: bool) -> Vec<DisplayEntry> {
+    if switched {
+        for _ in 0..40 {
+            if lumen::ddc::is_online(display_id) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        // Let the link finish retraining before asking for DDC values.
+        std::thread::sleep(Duration::from_millis(600));
+    } else {
+        // The display kept its link (the LG does this while showing another input). Give the
+        // monitor's DDC engine a moment after the write, but do not wait for an offline event
+        // that will never come.
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    scan()
 }
 
 /// The writes to try for one input: the configured command first, then the other protocol with

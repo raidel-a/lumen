@@ -404,6 +404,7 @@ mod tests {
             contrast: None,
             volume: None,
             muted: None,
+            controls_stale: false,
             current_input: None,
             ddc_error: ddc_error.map(str::to_string),
         }

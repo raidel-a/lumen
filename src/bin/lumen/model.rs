@@ -100,8 +100,19 @@ impl Model {
         self.released.iter().any(|entry| entry.key == key)
     }
 
-    /// Applies a fresh scan, keeping release records only for displays that are still away.
+    /// Applies a fresh scan, keeping the last control values when a DDC read failed.
+    ///
+    /// The LG keeps its DisplayPort link alive while showing another input, and its DDC channel
+    /// drops replies around a switch and link retrain. Replacing the model outright turned one
+    /// missed packet into a control that vanished from the menu until a manual refresh; carrying
+    /// the previous value forward keeps the slider there while the monitor settles.
     pub fn set_displays(&mut self, displays: Vec<DisplayEntry>) {
+        let previous = std::mem::take(&mut self.displays);
+        let mut displays = displays;
+        for display in &mut displays {
+            let old = previous.iter().find(|entry| entry.key == display.key);
+            carry_controls(old, display);
+        }
         self.displays = displays;
         let before = self.released.len();
         self.released.retain(|released| !self.displays.iter().any(|display| display.id == released.id));
@@ -141,5 +152,110 @@ impl Model {
                 .map(|config| config.show_in_menu)
                 .unwrap_or(true)
         })
+    }
+}
+
+/// Carries control values from the previous scan into `display` where this scan found none.
+///
+/// Returns true when at least one control was carried, so the UI can say the values are the last
+/// known ones instead of pretending the read succeeded.
+fn carry_controls(previous: Option<&DisplayEntry>, display: &mut DisplayEntry) -> bool {
+    display.controls_stale = false;
+    let Some(previous) = previous else {
+        return false;
+    };
+    let mut carried = false;
+    if display.brightness.is_none() && previous.brightness.is_some() {
+        display.brightness = previous.brightness;
+        carried = true;
+    }
+    if display.contrast.is_none() && previous.contrast.is_some() {
+        display.contrast = previous.contrast;
+        carried = true;
+    }
+    if display.volume.is_none() && previous.volume.is_some() {
+        display.volume = previous.volume;
+        carried = true;
+    }
+    if display.muted.is_none() && previous.muted.is_some() {
+        display.muted = previous.muted;
+        carried = true;
+    }
+    if display.inputs.is_empty() && !previous.inputs.is_empty() {
+        display.inputs = previous.inputs.clone();
+    }
+    display.controls_stale = carried;
+    carried
+}
+
+#[cfg(test)]
+mod tests {
+    use super::carry_controls;
+    use crate::engine::DisplayEntry;
+
+    fn entry(id: u32, key: &str) -> DisplayEntry {
+        DisplayEntry {
+            id,
+            key: key.to_string(),
+            name: "LG ULTRAWIDE".to_string(),
+            builtin: false,
+            inputs: Vec::new(),
+            brightness: None,
+            contrast: None,
+            volume: None,
+            muted: None,
+            controls_stale: false,
+            current_input: None,
+            ddc_error: None,
+        }
+    }
+
+    #[test]
+    fn a_missed_read_keeps_the_previous_value() {
+        let mut old = entry(2, "lg");
+        old.brightness = Some((70, 100));
+        old.contrast = Some((50, 100));
+        let mut fresh = entry(2, "lg");
+        fresh.contrast = Some((60, 100));
+
+        assert!(carry_controls(Some(&old), &mut fresh));
+        assert_eq!(fresh.brightness, Some((70, 100)));
+        // A value this scan did read wins over the old one.
+        assert_eq!(fresh.contrast, Some((60, 100)));
+        assert!(fresh.controls_stale);
+    }
+
+    #[test]
+    fn a_complete_read_clears_the_stale_flag() {
+        let mut old = entry(2, "lg");
+        old.brightness = Some((70, 100));
+        let mut fresh = entry(2, "lg");
+        fresh.brightness = Some((80, 100));
+
+        assert!(!carry_controls(Some(&old), &mut fresh));
+        assert_eq!(fresh.brightness, Some((80, 100)));
+        assert!(!fresh.controls_stale);
+    }
+
+    #[test]
+    fn a_new_display_borrows_nothing() {
+        let mut fresh = entry(3, "other");
+        assert!(!carry_controls(None, &mut fresh));
+        assert_eq!(fresh.brightness, None);
+        assert!(!fresh.controls_stale);
+    }
+
+    #[test]
+    fn detected_inputs_survive_a_failed_capability_read() {
+        let mut old = entry(2, "lg");
+        old.inputs = vec![lumen::ddc::InputCode {
+            label: "HDMI 1".to_string(),
+            value: 0x90,
+            protocol: lumen::ddc::InputProtocol::LgAlt,
+        }];
+        let mut fresh = entry(2, "lg");
+
+        assert!(!carry_controls(Some(&old), &mut fresh));
+        assert_eq!(fresh.inputs, old.inputs);
     }
 }

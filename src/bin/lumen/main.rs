@@ -170,12 +170,20 @@ pub fn queue_control(display_id: u32, code: u8, value: u16) {
 
 /// Rescans after display changes and wake, coalescing bursts into one scan.
 pub fn schedule_rescan() {
+    schedule_rescan_after(Duration::from_millis(350));
+}
+
+/// Queues one scan after `delay`, replacing any scan already queued.
+///
+/// A link retrain after an input switch takes a couple of seconds. Callers use this to look at the
+/// display again once the monitor has settled, so a scan taken mid-retrain is not final.
+pub fn schedule_rescan_after(delay: Duration) {
     let generation = RESCAN.with(|cell| {
         let next = cell.get() + 1;
         cell.set(next);
         next
     });
-    dispatch::Queue::main().exec_after(Duration::from_millis(350), move || {
+    dispatch::Queue::main().exec_after(delay, move || {
         if RESCAN.with(|cell| cell.get()) == generation {
             crate::log::trace("rescan: display configuration changed");
             spawn_scan();
@@ -266,6 +274,7 @@ pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<S
     let protocol = Protocol::from_ddc(input.protocol);
     std::thread::spawn(move || {
         let outcome = engine::switch(display_id, &input);
+        let displays = engine::scan_after_switch(display_id, outcome.switched);
         let switched = outcome.switched;
         let sent = outcome.sent;
         let rejected = outcome.rejected;
@@ -274,7 +283,7 @@ pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<S
         on_main(move || {
             with_model(|model| {
                 model.message = Some(message);
-                model.set_displays(engine::scan());
+                model.set_displays(displays);
                 if let Some(key) = key {
                     // An accepted write is the best signal this monitor gives. Remember the
                     // chosen input even when macOS cannot confirm it, but only a confirmed or
@@ -295,6 +304,10 @@ pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<S
                     crate::ui::confirm_switch_result(&label, key, value, protocol);
                 }
             }
+            // A switch back to DisplayPort retrains the link for a couple of seconds. Look again
+            // once it should be stable so the control values come from the monitor, not the
+            // previous scan.
+            crate::schedule_rescan_after(Duration::from_secs(4));
         });
     });
 }
@@ -514,10 +527,11 @@ pub fn run_action(action: Action) {
             after_change();
             std::thread::spawn(move || {
                 let message = engine::release(id, &name);
+                let displays = engine::scan();
                 on_main(move || {
                     with_model(|model| {
                         model.message = Some(message);
-                        model.set_displays(engine::scan());
+                        model.set_displays(displays);
                     });
                     after_change();
                 });
@@ -525,13 +539,15 @@ pub fn run_action(action: Action) {
                 if let Some(minutes) = auto {
                     std::thread::sleep(Duration::from_secs(u64::from(minutes) * 60));
                     let message = engine::reclaim(id, &name);
+                    let displays = engine::scan();
                     on_main(move || {
                         with_model(|model| {
                             model.forget_released(id);
                             model.message = Some(message);
-                            model.set_displays(engine::scan());
+                            model.set_displays(displays);
                         });
                         after_change();
+                        crate::schedule_rescan_after(Duration::from_secs(4));
                     });
                 }
             });
@@ -550,12 +566,14 @@ pub fn run_action(action: Action) {
             after_change();
             std::thread::spawn(move || {
                 let message = engine::reclaim(released.id, &released.name);
+                let displays = engine::scan();
                 on_main(move || {
                     with_model(|model| {
                         model.message = Some(message);
-                        model.set_displays(engine::scan());
+                        model.set_displays(displays);
                     });
                     after_change();
+                    crate::schedule_rescan_after(Duration::from_secs(4));
                 });
             });
         }

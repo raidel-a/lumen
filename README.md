@@ -302,7 +302,10 @@ reports as active (VCP 0x60), or the one this app last sent when the monitor can
 the input list scrolls with the page.
 
 If every VCP read fails, the Displays page shows which read failed and asks you to wake the
-monitor and refresh, instead of just showing an empty controls group.
+monitor and refresh, instead of just showing an empty controls group. DDC replies can also be
+missed one at a time around an input switch or a link retrain, so a failed read keeps that
+control's last value instead of removing its slider, and a switch schedules one more scan after
+the monitor has had time to settle. The page says when it is showing the last known values.
 
 ## Built-in display
 

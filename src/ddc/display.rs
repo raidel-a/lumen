@@ -23,7 +23,10 @@ pub const VCP_FACTORY_RESET: u8 = 0x04;
 
 const DDC_WRITE_WAIT: Duration = Duration::from_millis(10);
 const DDC_READ_WAIT: Duration = Duration::from_millis(45);
-const READ_ATTEMPTS: usize = 3;
+/// Attempts for one DDC transaction (write plus read). A missed read resends the request: the DCP
+/// does not keep the reply around, so reading the buffer again cannot recover it.
+const DDC_ATTEMPTS: usize = 3;
+const DDC_RETRY_WAIT: Duration = Duration::from_millis(20);
 
 #[derive(Debug)]
 pub enum DdcError {
@@ -224,8 +227,8 @@ impl Display {
         let mut out = String::new();
         let mut offset = 0u16;
         loop {
-            let mut request = vec![0xF3u8, (offset >> 8) as u8, (offset & 0xff) as u8];
-            let payload = self.exchange(&mut request, 40, DataAddress::Host)?;
+            let request = vec![0xF3u8, (offset >> 8) as u8, (offset & 0xff) as u8];
+            let payload = self.transaction(&request, 40, DataAddress::Host)?;
             if payload.len() < 4 || payload[0] != 0xE3 {
                 break;
             }
@@ -254,8 +257,8 @@ impl Display {
 
     /// Reads a VCP feature through a specific data address.
     pub fn read_vcp_with(&mut self, code: u8, address: DataAddress) -> Result<VcpValue, DdcError> {
-        let mut request = vec![0x01u8, code];
-        let payload = self.exchange(&mut request, 12, address)?;
+        let request = vec![0x01u8, code];
+        let payload = self.transaction(&request, 12, address)?;
         if payload.len() < 8 {
             return Err(DdcError::BadReply(format!("short VCP reply ({})", payload.len())));
         }
@@ -323,17 +326,42 @@ impl Display {
         out
     }
 
+    /// Runs one read transaction, resending the request when the reply is missing.
+    ///
+    /// A retry must repeat the write: `IOAVServiceReadI2C` reads the bus, not a buffered reply, so
+    /// re-reading the same buffer after a miss cannot recover anything. Some firmware, including
+    /// the LG ULTRAWIDE this was built against, drops replies around input switches and link
+    /// retraining, which used to turn one missed packet into a control that vanished from the menu.
+    fn transaction(
+        &mut self,
+        request: &[u8],
+        read_len: u32,
+        address: DataAddress,
+    ) -> Result<Vec<u8>, DdcError> {
+        let mut last = DdcError::NoReply;
+        for attempt in 0..DDC_ATTEMPTS {
+            if attempt > 0 {
+                std::thread::sleep(DDC_RETRY_WAIT);
+            }
+            match self.exchange(request, read_len, address) {
+                Ok(payload) => return Ok(payload),
+                Err(error) => last = error,
+            }
+        }
+        Err(last)
+    }
+
     /// Sends a DDC packet and optionally reads the reply.
     fn exchange(
         &mut self,
-        request: &mut Vec<u8>,
+        request: &[u8],
         read_len: u32,
         address: DataAddress,
     ) -> Result<Vec<u8>, DdcError> {
         let data_address = address.as_u32();
         let mut packet = Vec::with_capacity(request.len() + 2);
         packet.push(0x80 | request.len() as u8);
-        packet.append(request);
+        packet.extend_from_slice(request);
         let checksum = packet
             .iter()
             .fold((self.chip << 1) as u8 ^ data_address as u8, |acc, byte| acc ^ byte);
@@ -349,7 +377,7 @@ impl Display {
 
     pub fn write_packet(&self, packet: &[u8], data_address: u32) -> Result<(), DdcError> {
         let mut last = 0;
-        for attempt in 0..READ_ATTEMPTS {
+        for attempt in 0..DDC_ATTEMPTS {
             if attempt > 0 {
                 std::thread::sleep(DDC_WRITE_WAIT * 2);
             }
@@ -372,28 +400,22 @@ impl Display {
 
     fn read_reply(&self, len: u32, data_address: u32) -> Result<Vec<u8>, DdcError> {
         let mut buffer = vec![0u8; len as usize];
-        for attempt in 0..READ_ATTEMPTS {
-            if attempt > 0 {
-                std::thread::sleep(DDC_WRITE_WAIT);
-                buffer.fill(0);
-            }
-            let status = unsafe {
-                ffi::IOAVServiceReadI2C(
-                    self.service.0,
-                    self.chip,
-                    data_address,
-                    buffer.as_mut_ptr() as _,
-                    len,
-                )
-            };
-            if status != 0 {
-                continue;
-            }
-            if buffer.len() >= 3 && buffer[1] & 0x80 != 0 {
-                let payload_len = (buffer[1] & 0x7f) as usize;
-                if 2 + payload_len <= buffer.len() {
-                    return Ok(buffer[2..2 + payload_len].to_vec());
-                }
+        let status = unsafe {
+            ffi::IOAVServiceReadI2C(
+                self.service.0,
+                self.chip,
+                data_address,
+                buffer.as_mut_ptr() as _,
+                len,
+            )
+        };
+        if status != 0 {
+            return Err(DdcError::NoReply);
+        }
+        if buffer.len() >= 3 && buffer[1] & 0x80 != 0 {
+            let payload_len = (buffer[1] & 0x7f) as usize;
+            if 2 + payload_len <= buffer.len() {
+                return Ok(buffer[2..2 + payload_len].to_vec());
             }
         }
         Err(DdcError::NoReply)

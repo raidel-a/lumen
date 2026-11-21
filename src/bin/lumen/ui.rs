@@ -1473,6 +1473,11 @@ unsafe fn build_displays(host: &NSView, model: &Model, theme: &Theme) {
     if let Some(error) = &display.ddc_error {
         let text = if display.builtin {
             format!("Brightness is unavailable: {error}.")
+        } else if display.controls_stale {
+            format!(
+                "Some DDC reads failed: {error}. Showing the last known values; choose Refresh \
+                 from the menu to retry."
+            )
         } else {
             format!(
                 "DDC reads failed: {error}. Wake the monitor and choose Refresh from the menu to retry."
