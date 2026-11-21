@@ -36,7 +36,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    # macOS 27 with Xcode 27. The app targets macOS 27, and the macOS 14 runners were retired
+    # from GitHub Actions on 2026-11-02.
+    runs-on: xcode-27
     env:
       # Non-secret identifiers are safe to expose; issuer id comes from a secret anyway.
       LUMEN_SIGN_IDENTITY: "Developer ID Application: Raidel Almeida (MK26S2J3QC)"
