@@ -190,9 +190,25 @@ use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop, CFRunLoopSource
 use std::cell::RefCell;
 use std::ffi::c_void;
 
-type CGEventRef = *mut c_void;
+type CGEventRef = *mut CGEventOpaque;
 type CGEventTapProxy = *const c_void;
 type CFMachPortRef = *mut c_void;
+
+/// Opaque CoreGraphics event.
+///
+/// It exists only to give the pointer the `^{__CGEvent=}` encoding that
+/// `+[NSEvent eventWithCGEvent:]` declares. Passing `*mut c_void` panics in objc2 0.5's message
+/// send argument check, which aborts the process inside the event tap.
+#[repr(C)]
+struct CGEventOpaque {
+    _private: [u8; 0],
+}
+
+unsafe impl objc2::encode::RefEncode for CGEventOpaque {
+    const ENCODING_REF: objc2::encode::Encoding = objc2::encode::Encoding::Pointer(
+        &objc2::encode::Encoding::Struct("__CGEvent", &[]),
+    );
+}
 
 #[allow(non_upper_case_globals)]
 const kCGSessionEventTap: u32 = 1;
@@ -445,6 +461,17 @@ mod tests {
     fn max_zero_is_safe() {
         assert_eq!(next_brightness(0, 0, BrightnessStep::Normal, true), 0);
         assert_eq!(next_brightness(50, 0, BrightnessStep::Coarse, false), 0);
+    }
+
+    #[test]
+    fn event_pointer_matches_nsevent_encoding() {
+        // +[NSEvent eventWithCGEvent:] declares ^{__CGEvent=}. A plain c_void pointer aborts at
+        // the message send inside the tap callback.
+        use objc2::encode::{Encode, Encoding};
+        assert_eq!(
+            <CGEventRef as Encode>::ENCODING,
+            Encoding::Pointer(&Encoding::Struct("__CGEvent", &[]))
+        );
     }
 
     #[test]
