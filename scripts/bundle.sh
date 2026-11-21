@@ -3,7 +3,7 @@
 # with a stable identity.
 #
 # Environment:
-#   LUMEN_VERSION        marketing version (default 0.1.0)
+#   LUMEN_VERSION        marketing version (default: last git tag, with -dev.N when ahead)
 #   LUMEN_BUILD          build number (default: git commit count)
 #   LUMEN_SIGN_IDENTITY  codesign identity (default: Developer ID Application, else first identity)
 #   LUMEN_FEED_URL       Sparkle appcast URL (default: the raw.githubusercontent.com URL below)
@@ -26,8 +26,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/version.sh
+source "$root/scripts/version.sh"
 app="$root/dist/Lumen.app"
-version="${LUMEN_VERSION:-0.1.0}"
+version="${LUMEN_VERSION:-$(lumen_local_version "$root")}"
 build="${LUMEN_BUILD:-$(git -C "$root" rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 
 # Prefer the Developer ID Application identity (required for notarised, hardened-runtime builds).

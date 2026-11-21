@@ -82,8 +82,11 @@ changes it on every build.
   same Developer ID gives it our Team ID, so hardened-runtime library validation is satisfied and no
   `disable-library-validation` entitlement is needed. Ad-hoc fallback stays runtime- and
   timestamp-free so pure-local dev builds still load.
-- `LUMEN_VERSION` (default `0.1.0`) and `LUMEN_BUILD` (default: git commit count) feed the plist.
-  `lumen --version` and Settings > About show them.
+- `LUMEN_VERSION` defaults to the last git tag, with a `-dev.<commits>` suffix when HEAD is ahead
+  of it. Releases pass the tag version explicitly. `LUMEN_BUILD` defaults to the git commit count.
+  `lumen --version` and Settings > About show both. A local build after `v0.1.5` reports
+  `0.1.5-dev.N` instead of an old `0.1.0`, so Settings > About and Sparkle's "newest version"
+  dialog agree; the build number still decides whether Sparkle offers an update.
 - `scripts/release.sh` produces `dist/Lumen-<version>.zip` and `.dmg`; the DMG contains the app and
   an Applications link and is signed with the same identity.
 
@@ -215,6 +218,9 @@ Locally:
 ```
 LUMEN_VERSION=0.2.0 ./scripts/release.sh
 ```
+
+`release.sh` requires `LUMEN_VERSION` unless HEAD is exactly a `v*` tag; it no longer falls back to
+`0.1.0`, so an unversioned local build cannot be published by accident.
 
 This builds and signs `Lumen.app` (hardened runtime, Sparkle embedded and nested-code-signed),
 notarises and staples it when notary credentials are present (keychain profile `lumen-notary`, or the

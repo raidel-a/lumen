@@ -26,7 +26,16 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${LUMEN_VERSION:-0.1.0}"
+if [[ -n "${LUMEN_VERSION:-}" ]]; then
+  version="$LUMEN_VERSION"
+else
+  tag="$(git -C "$root" describe --tags --exact-match 2>/dev/null || true)"
+  if [[ -z "$tag" ]]; then
+    echo "error: set LUMEN_VERSION, or check out the release tag before running release.sh" >&2
+    exit 1
+  fi
+  version="${tag#v}"
+fi
 build="${LUMEN_BUILD:-$(git -C "$root" rev-list --count HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 
 release_owner="${LUMEN_RELEASE_OWNER:-raidel-a}"
