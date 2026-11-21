@@ -13,7 +13,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{declare_class, msg_send, msg_send_id, mutability, sel, ClassType, DeclaredClass};
 use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSApplication,
+    NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn,
+    NSApplication,
     NSApplicationDidChangeScreenParametersNotification, NSAutoresizingMaskOptions, NSBackingStoreType,
     NSBox, NSBoxType, NSButton, NSColor, NSControl, NSControlStateValueOff, NSControlStateValueOn,
     NSFont, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage, NSImageView,
@@ -2364,9 +2365,9 @@ fn make_actions() -> Retained<Actions> {
 
 /// Presents an alert as a sheet on the settings window. The completion runs on the main thread
 /// when the user answers; no modal loop or window moving is involved.
-fn present_alert<F>(alert: Retained<NSAlert>, completion: F)
+fn present_alert_index<F>(alert: Retained<NSAlert>, completion: F)
 where
-    F: FnOnce(bool) + 'static,
+    F: FnOnce(isize) + 'static,
 {
     let Some(settings) = UI.with(|ui| ui.borrow().window.clone()) else {
         return;
@@ -2378,12 +2379,21 @@ where
         let _alert = &keep;
         let callback = completion.borrow_mut().take();
         if let Some(callback) = callback {
-            callback(response == NSAlertFirstButtonReturn);
+            callback(response);
         }
     });
     unsafe {
         alert.beginSheetModalForWindow_completionHandler(&settings, Some(&handler));
     }
+}
+
+fn present_alert<F>(alert: Retained<NSAlert>, completion: F)
+where
+    F: FnOnce(bool) + 'static,
+{
+    present_alert_index(alert, move |response| {
+        completion(response == NSAlertFirstButtonReturn);
+    });
 }
 
 fn confirm<F>(message: &str, detail: &str, action: &str, completion: F)
@@ -2397,6 +2407,39 @@ where
         alert.addButtonWithTitle(&NSString::from_str(action));
         alert.addButtonWithTitle(&NSString::from_str("Cancel"));
         present_alert(alert, completion);
+    }
+}
+
+/// Asks what the monitor is showing after a write this display could not confirm.
+///
+/// The answer is the only reliable verification for firmware that keeps its old link alive while
+/// showing another input. Cancelling leaves the input unverified rather than marking it failed.
+pub fn confirm_switch_result(label: &str, key: String, value: u16, protocol: Protocol) {
+    unsafe {
+        let alert = NSAlert::new(mtm());
+        alert.setMessageText(&NSString::from_str(&format!("Did the monitor switch to {label}?")));
+        alert.setInformativeText(&NSString::from_str(
+            "Lumen sent the input command, but this monitor does not report which input is active. \
+             What is on screen now?",
+        ));
+        alert.addButtonWithTitle(&NSString::from_str("Yes, it switched"));
+        alert.addButtonWithTitle(&NSString::from_str("No, it did not"));
+        alert.addButtonWithTitle(&NSString::from_str("Cancel"));
+        present_alert_index(alert, move |response| {
+            let verified = if response == NSAlertFirstButtonReturn {
+                Some(true)
+            } else if response == NSAlertSecondButtonReturn {
+                Some(false)
+            } else {
+                None
+            };
+            if let Some(verified) = verified {
+                crate::with_model(|model| {
+                    model.config.mark_input(&key, value, protocol, verified);
+                });
+                crate::after_change();
+            }
+        });
     }
 }
 
@@ -3017,11 +3060,11 @@ declare_class!(
             let alert = format!("Test {} on {}?", input.label, name);
             confirm(
                 &alert,
-                "Lumen sends a DDC input-select command. If the monitor accepts it, it switches away and this display disappears from the Mac. Some monitors cannot switch back over DDC, so you may need the monitor's own controls to return.",
+                "Lumen sends a DDC input-select command. Some monitors cannot switch back over DDC, so keep the monitor's own controls nearby. If the monitor does not report the new input, Lumen will ask you what you see.",
                 "Test",
                 move |confirmed| {
                     if confirmed {
-                        crate::switch_input(display_id, code, Some(key));
+                        crate::switch_input(display_id, code, Some(key), true);
                     }
                 },
             );

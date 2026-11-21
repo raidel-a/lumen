@@ -256,25 +256,45 @@ fn spawn_scan() {
     });
 }
 
-/// Switches an input on a worker and records whether the attempt actually worked.
-pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<String>) {
+/// Switches an input on a worker and records the result.
+///
+/// `ask` shows the "did the monitor switch?" sheet after an accepted but unconfirmed write; the
+/// settings Test button uses it because this class of monitor has no input readback.
+pub fn switch_input(display_id: u32, input: lumen::ddc::InputCode, key: Option<String>, ask: bool) {
     let value = input.value;
+    let label = input.label.clone();
     let protocol = Protocol::from_ddc(input.protocol);
     std::thread::spawn(move || {
         let outcome = engine::switch(display_id, &input);
         let switched = outcome.switched;
+        let sent = outcome.sent;
+        let rejected = outcome.rejected;
+        let message = outcome.message;
+        let alert_key = key.clone();
         on_main(move || {
             with_model(|model| {
-                model.message = Some(outcome.message);
+                model.message = Some(message);
                 model.set_displays(engine::scan());
                 if let Some(key) = key {
-                    if switched {
+                    // An accepted write is the best signal this monitor gives. Remember the
+                    // chosen input even when macOS cannot confirm it, but only a confirmed or
+                    // explicitly failed attempt changes the verified flag.
+                    if switched || sent {
                         model.remember_input(&key, value, protocol);
                     }
-                    model.config.mark_input(&key, value, protocol, switched);
+                    if switched {
+                        model.config.mark_input(&key, value, protocol, true);
+                    } else if rejected {
+                        model.config.mark_input(&key, value, protocol, false);
+                    }
                 }
             });
             after_change();
+            if ask && sent && !switched {
+                if let Some(key) = alert_key {
+                    crate::ui::confirm_switch_result(&label, key, value, protocol);
+                }
+            }
         });
     });
 }
@@ -459,7 +479,7 @@ pub fn run_action(action: Action) {
 
             let input = lumen::ddc::InputCode { label, value, protocol };
             let key = with_model(|model| model.display(display).map(|entry| entry.key.clone()));
-            switch_input(display, input, key);
+            switch_input(display, input, key, false);
         }
         Action::Brightness { display, value } => {
             apply_control(display, lumen::ddc::VCP_BRIGHTNESS, value)

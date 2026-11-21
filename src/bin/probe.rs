@@ -166,13 +166,16 @@ fn switch(id: u32, label: &str) {
         for _ in 0..25 {
             std::thread::sleep(Duration::from_millis(200));
             if !lumen::ddc::is_online(id) {
-                println!("  display left this input: switch succeeded");
+                println!("  display left this input: switch confirmed");
                 return;
             }
         }
-        println!("  display stayed: no switch");
+        // Some firmware keeps the old link alive while showing another input, so an accepted
+        // write is not a failure. Do not send more candidates: that could undo the switch.
+        println!("  sent, but the display stayed connected (monitor did not confirm)");
+        return;
     }
-    println!("no candidate switched this display");
+    println!("no candidate could be sent to this display");
 }
 
 fn with_display(id: u32, f: impl FnOnce(&mut Display)) {

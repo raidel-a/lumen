@@ -126,27 +126,105 @@ fn scan_builtin(displays: &mut Vec<DisplayEntry>) {
 
 pub struct SwitchOutcome {
     pub message: String,
+    /// The display left this Mac's display list, so the switch is confirmed.
     pub switched: bool,
+    /// The monitor accepted at least one input-select write.
+    pub sent: bool,
+    /// A write reached a connected display and the monitor rejected it.
+    pub rejected: bool,
 }
 
-/// Switches a display to `input`, trying the neighbouring protocol variants as fallbacks.
+impl SwitchOutcome {
+    fn confirmed(name: &str, label: &str) -> Self {
+        Self {
+            message: format!("{name}: switched to {label}"),
+            switched: true,
+            sent: true,
+            rejected: false,
+        }
+    }
+
+    fn unconfirmed(name: &str, label: &str) -> Self {
+        Self {
+            message: format!("{name}: sent {label} - the monitor did not report a change"),
+            switched: false,
+            sent: true,
+            rejected: false,
+        }
+    }
+}
+
+/// Switches a display to `input`.
 ///
-/// A successful switch removes the display from macOS, so "the display is gone" is the success
-/// signal. A monitor that ignores the command keeps the display online and the next variant runs.
+/// A monitor that switches inputs cleanly removes the display from macOS, which confirms the
+/// command. Some firmware (including the LG ULTRAWIDE this was built against) keeps the old link
+/// and HPD alive while showing another input, so the display stays online even though the switch
+/// happened. An accepted write is therefore reported as "sent", not as a failure.
+///
+/// Fallback protocol variants run only when the monitor rejects the write, so a monitor that
+/// accepts the command but keeps its link alive does not get a second, possibly conflicting
+/// command.
 pub fn switch(display_id: u32, input: &InputCode) -> SwitchOutcome {
     let Some(mut display) = Display::find(display_id) else {
-        return SwitchOutcome { message: "Display is not connected".to_string(), switched: false };
+        return SwitchOutcome {
+            message: "Display is not connected".to_string(),
+            switched: false,
+            sent: false,
+            rejected: false,
+        };
     };
     let name = display.name.clone();
     let base_label = input.label.replace(" (LG alt)", "");
-    let mut attempts: Vec<InputCode> = vec![input.clone()];
+    let attempts = switch_attempts(input, display.input_candidates());
 
+    let mut last_error = None;
+    for attempt in attempts {
+        let Some(mut display) = Display::find(display_id) else {
+            return SwitchOutcome::confirmed(&name, &base_label);
+        };
+        match display.set_input(attempt.value, attempt.protocol) {
+            Ok(()) => {
+                for _ in 0..25 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    if !lumen::ddc::is_online(display_id) {
+                        return SwitchOutcome::confirmed(&name, &base_label);
+                    }
+                }
+                return SwitchOutcome::unconfirmed(&name, &base_label);
+            }
+            Err(error) => {
+                last_error = Some(error);
+                std::thread::sleep(Duration::from_millis(400));
+            }
+        }
+    }
+
+    let rejected = last_error.is_some();
+    let reason = last_error
+        .map(|error| format!(": {error}"))
+        .unwrap_or_default();
+    SwitchOutcome {
+        message: format!("{name}: could not send {base_label}{reason}"),
+        switched: false,
+        sent: false,
+        rejected,
+    }
+}
+
+/// The writes to try for one input: the configured command first, then the other protocol with
+/// the same value, then every detected input with the same label. Later entries are only used
+/// when the monitor rejects the earlier write.
+fn switch_attempts(input: &InputCode, candidates: Vec<InputCode>) -> Vec<InputCode> {
+    let base_label = input.label.replace(" (LG alt)", "");
     let other = match input.protocol {
         InputProtocol::Standard => InputProtocol::LgAlt,
         InputProtocol::LgAlt => InputProtocol::Standard,
     };
-    attempts.push(InputCode { label: input.label.clone(), value: input.value, protocol: other });
-    for candidate in display.input_candidates() {
+    let mut attempts = vec![
+        input.clone(),
+        InputCode { label: input.label.clone(), value: input.value, protocol: other },
+    ];
+    for candidate in candidates {
         if candidate.label.replace(" (LG alt)", "") == base_label
             && !attempts
                 .iter()
@@ -155,25 +233,7 @@ pub fn switch(display_id: u32, input: &InputCode) -> SwitchOutcome {
             attempts.push(candidate);
         }
     }
-
-    for attempt in attempts {
-        let Some(mut display) = Display::find(display_id) else {
-            return SwitchOutcome { message: format!("{name}: switched to {base_label}"), switched: true };
-        };
-        let _ = display.set_input(attempt.value, attempt.protocol);
-        for _ in 0..25 {
-            std::thread::sleep(Duration::from_millis(100));
-            if !lumen::ddc::is_online(display_id) {
-                return SwitchOutcome {
-                    message: format!("{name}: switched to {base_label}"),
-                    switched: true,
-                };
-            }
-        }
-        std::thread::sleep(Duration::from_millis(400));
-    }
-
-    SwitchOutcome { message: format!("{name}: no response to {base_label}"), switched: false }
+    attempts
 }
 
 /// Stops driving the display so the monitor can follow another input.
@@ -253,7 +313,37 @@ fn ddc_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use super::ddc_diagnostic;
+    use super::{ddc_diagnostic, switch_attempts};
+    use lumen::ddc::{InputCode, InputProtocol};
+
+    fn code(label: &str, value: u16, protocol: InputProtocol) -> InputCode {
+        InputCode { label: label.to_string(), value, protocol }
+    }
+
+    #[test]
+    fn configured_command_comes_first_then_the_other_protocol() {
+        let attempts = switch_attempts(
+            &code("HDMI 1", 0x90, InputProtocol::LgAlt),
+            Vec::new(),
+        );
+        assert_eq!(attempts[0], code("HDMI 1", 0x90, InputProtocol::LgAlt));
+        assert_eq!(attempts[1], code("HDMI 1", 0x90, InputProtocol::Standard));
+    }
+
+    #[test]
+    fn same_label_candidates_are_added_once() {
+        let attempts = switch_attempts(
+            &code("HDMI 1 (LG alt)", 0x90, InputProtocol::LgAlt),
+            vec![
+                code("HDMI 1", 0x11, InputProtocol::Standard),
+                code("HDMI 1 (LG alt)", 0x90, InputProtocol::Standard),
+                code("HDMI 2", 0x12, InputProtocol::Standard),
+            ],
+        );
+        assert_eq!(attempts.len(), 3);
+        assert_eq!(attempts[2], code("HDMI 1", 0x11, InputProtocol::Standard));
+        assert!(!attempts.iter().any(|attempt| attempt.value == 0x12));
+    }
 
     #[test]
     fn explains_a_completely_blank_control_set() {

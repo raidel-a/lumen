@@ -298,8 +298,8 @@ magnetically towards five points - 0, 25, 50, 75 and 100 percent - when within 3
 those values are easy to repeat while anything in between is still reachable. Holding Option
 bypasses the pull for exact values. Drags are coalesced into one DDC write every 150 ms and update
 the readout immediately. The editor marks the input the display
-reports as active (VCP 0x60) or the one this app last switched to, and the input list scrolls
-with the page.
+reports as active (VCP 0x60), or the one this app last sent when the monitor cannot report it, and
+the input list scrolls with the page.
 
 If every VCP read fails, the Displays page shows which read failed and asks you to wake the
 monitor and refresh, instead of just showing an empty controls group.
@@ -319,11 +319,12 @@ If DisplayServices is unavailable, the entry still appears with a note explainin
 cannot be read or set, rather than disappearing.
 
 Each input row has a **Test** button. It asks for confirmation first, then sends that input's
-command (with the protocol fallbacks) and records whether the display actually left: a ✓ or ✗
-badge in the row, persisted in the config. The warning matters because a monitor that accepts the
-command switches away and some firmware cannot switch back over DDC - you may need the monitor's
-own controls. Successful switches from the menu are recorded the same way, so the list also
-learns from normal use.
+command. If the display leaves the Mac, the row gets a ✓ badge. If the display stays connected,
+Lumen asks what is on screen and records that answer, because some firmware keeps the old link
+alive while showing another input. A ✗ is recorded only when the monitor rejects the write. The
+warning matters because a monitor that accepts the command switches away and some firmware cannot
+switch back over DDC - you may need the monitor's own controls. Switches from the menu remember
+the chosen input, and a confirmed one also records it as verified.
 
 ## Brightness keys and HUD
 
@@ -382,23 +383,28 @@ kept in `spikes/native-settings`).
 The app has two ways to move a display to another input.
 
 **DDC input select.** Standard VCP `0x60`, plus the "LG alt" variant (VCP `0xF4` addressed at
-`0x50`) that some LG firmware expects. Precise, and works on displays whose firmware implements
-input select.
+`0x50`) that some LG firmware expects. A monitor that switches cleanly removes the display from
+macOS, which confirms the command. Some firmware keeps the old link and HPD alive while showing
+another input, so the display stays online even though the switch happened. Lumen treats an
+accepted write as **sent**, not as a failure, and does not try more protocol variants after it.
+The Settings Test then asks whether the monitor switched and stores that answer as the input's
+verified state.
 
-**Release to other input.** Some monitors - including the LG ULTRAWIDE this was built against -
-report `VCP 0x60` as bogus (max 18, current `0x00`) and ignore every input-select write, from
-standard and LG-alt addressing and from every third-party tool. Their firmware only switches when
-the current signal disappears.
+**Release to other input.** Release stops macOS from driving the display's output. With the
+monitor's OSD **Auto Input Switch** enabled, the monitor locks onto whichever HDMI/DP input still
+has a live signal. **Bring <display> back** drives the output again and the monitor follows the
+returning signal. Release cannot move a monitor whose Auto Input Switch is off: the monitor stays
+on the now-dead input. Verified round trip on the LG, with Auto Input Switch on.
 
 The display submenu marks the input the Mac is on: bold title plus checkmark. The monitor's own
-report (`VCP 0x60`) wins when it answers, then the input this app last switched to, remembered in
-`config.json`, then the first enabled input. The fallback exists because the LG answers `0x60`
-with zero and ignores input-select writes, so nothing else would ever be marked.
+report (`VCP 0x60`) wins when it answers, then the input this app last sent, remembered in
+`config.json`, then the first enabled input. The fallback exists because some firmware, including
+the LG this was built against, answers `0x60` with zero and writes `0xF4` with a constant, so the
+active input cannot be read back.
 
-Release stops macOS from driving the display's output. With the monitor's OSD **Auto Input
-Switch** enabled, the monitor locks onto whichever HDMI/DP input still has a live signal.
-**Bring <display> back** drives the output again and the monitor follows the returning signal.
-Verified round trip on the LG.
+The LG accepts the LG-alt writes (`0x90` HDMI 1, `0x91` HDMI 2, `0xD0` DisplayPort, `0xD1`/`0xD2`
+USB-C depending on the model). It keeps the DisplayPort link alive while showing HDMI, so "the
+display disappeared" is not a reliable success signal on this unit; the confirmation prompt is.
 
 ## Virtual screens
 
@@ -510,7 +516,12 @@ permissions in the profile rather than clicking dialogs.
 
 ## Caveats
 
-- Release needs the monitor's OSD **Auto Input Switch** on.
+- Release needs the monitor's OSD **Auto Input Switch** on. With it off, the monitor stays on the
+  input it was showing when the Mac's signal stopped and the screen goes dark. DDC input select is
+  the path in that mode, though some firmware overrides DDC while Auto Input Switch is on.
+- A monitor that keeps its old link alive while showing another input cannot confirm an input
+  switch to macOS. Lumen reports the command as sent and the Settings Test asks what you see; the
+  answer is what marks the input verified.
 - While released, the display is gone from System Settings (macOS isn't driving it). Quitting
   Lumen reclaims it; if the app is force-quit while a display is released, log out and back in
   (or re-plug the cable) to get it back.
