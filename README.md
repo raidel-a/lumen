@@ -194,6 +194,16 @@ new signature and notarisation. Update the stored P12 and the `lumen-developer-i
 at the same time. Replacing the certificate requires one manual re-grant of the System & App
 Protection Override (see above).
 
+Remove the old identity from the login keychain once the new one is proven:
+
+```
+security delete-identity -Z <old SHA-1> ~/Library/Keychains/login.keychain-db
+```
+
+Two certificates with the same common name make `codesign --sign "Developer ID Application: ..."`
+ambiguous, which breaks local builds and `scripts/dev/test-update.sh` even though CI still works
+(it imports only one identity).
+
 Retire the old certificate only after the new one has produced a signed, notarised release. The
 portal may refuse to revoke a Developer ID certificate with "only be revoked by Apple Developer
 Program Support"; if so, the old certificate stays listed until it expires and is no longer used by
