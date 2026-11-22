@@ -112,8 +112,10 @@ Credentials reach the script two ways, checked in this order:
 - **CI**: the explicit App Store Connect API key triplet `LUMEN_NOTARY_KEY` (path to the `.p8`),
   `LUMEN_NOTARY_KEY_ID`, and `LUMEN_NOTARY_ISSUER`. The GitHub Actions workflow uses this form.
 
-Signing material (the Developer ID key, cert, and PEM) lives in `~/Developer/lumen-signing/`, outside
-the repository and never committed.
+The Developer ID identity is kept as an encrypted P12 at
+`~/Library/Application Support/Lumen/signing/DeveloperID.p12` (mode 600), outside the repository and
+never committed. Its password is stored in the login keychain as a generic password:
+`security find-generic-password -s lumen-developer-id-p12 -a "$USER" -w`.
 
 #### One-time: create the notary keychain profile (local)
 
@@ -135,8 +137,11 @@ The first Developer-ID-signed build changes the app's code signature (new Team I
 macOS keys TCC permissions and the `SMAppService` login item to the signature, so **existing installed
 copies will, once, re-prompt for Screen Recording and re-register the login item** after they
 update to the first Developer-ID build. If brightness keys are enabled, they also need the macOS 27
-System & App Protection Override again. This is expected and happens only on that one transition;
-subsequent Developer-ID builds keep the grants because the identity is stable.
+System & App Protection Override again.
+
+Replacing or renewing the Developer ID certificate later has the same effect: the override grant is
+keyed to the leaf certificate, so one manual re-grant is required per certificate, not per build.
+Builds signed with the same certificate keep the grant.
 
 ### Releasing from CI (GitHub Actions)
 
@@ -149,8 +154,8 @@ Required repository secrets (Settings → Secrets and variables → Actions):
 
 | Secret | What it is | How to produce it |
 | --- | --- | --- |
-| `DEVELOPER_ID_P12_BASE64` | Developer ID Application identity (cert + private key) as a base64 `.p12` | `security export -k login.keychain -t identities -f pkcs12 -P <pw> -o developer_id.p12` then `base64 -i developer_id.p12 \| pbcopy` |
-| `DEVELOPER_ID_P12_PASSWORD` | the `-P` password used in the export above | choose it at export time |
+| `DEVELOPER_ID_P12_BASE64` | Developer ID Application identity (cert + private key + Developer ID G2 intermediate) as a base64 `.p12` | build it with `openssl` (see below), then `base64 -i DeveloperID.p12 -o DeveloperID.p12.b64` |
+| `DEVELOPER_ID_P12_PASSWORD` | the `-passout` password used to create that `.p12` | choose it at creation time; keep it in the login keychain |
 | `KEYCHAIN_PASSWORD` | any strong string; unlocks the throwaway CI keychain | generate a random string |
 | `NOTARY_KEY_P8_BASE64` | App Store Connect API key, base64 | `base64 -i AuthKey_XXXXXXXXXX.p8 \| pbcopy` |
 | `NOTARY_KEY_ID` | the 10-char key ID of that API key | shown in App Store Connect next to the key |
@@ -159,6 +164,40 @@ Required repository secrets (Settings → Secrets and variables → Actions):
 
 The workflow never echoes a secret; each is written to a file or piped straight into `security` /
 `notarytool`.
+
+#### Replacing the Developer ID identity
+
+Keychain export of an existing identity can fail with `The contents of this item cannot be
+retrieved` when the private key is not exportable, so build the P12 directly from the key and the
+downloaded certificate instead:
+
+```
+openssl pkcs12 -export -legacy \
+  -inkey developer_id.key \
+  -in    developer_id.pem \
+  -certfile DeveloperIDG2CA.pem \
+  -name "Developer ID Application: Raidel Almeida (MK26S2J3QC)" \
+  -out   DeveloperID.p12 -passout file:pass.txt
+
+security create-keychain -p test /tmp/check.keychain-db
+security import DeveloperID.p12 -k /tmp/check.keychain-db -P "$(cat pass.txt)"
+security find-identity -v -p codesigning /tmp/check.keychain-db   # expect the Developer ID identity
+security delete-keychain /tmp/check.keychain-db
+```
+
+`-legacy` is required: macOS `security import` rejects the PKCS#12 format OpenSSL 4 writes by
+default and reports it as a wrong password. `DeveloperIDG2CA.pem` is the "Developer ID - G2"
+intermediate from the Apple Developer portal; without it the CI keychain cannot build the chain.
+
+Then update `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, run a release, and confirm the
+new signature and notarisation. Update the stored P12 and the `lumen-developer-id-p12` keychain item
+at the same time. Replacing the certificate requires one manual re-grant of the System & App
+Protection Override (see above).
+
+Retire the old certificate only after the new one has produced a signed, notarised release. The
+portal may refuse to revoke a Developer ID certificate with "only be revoked by Apple Developer
+Program Support"; if so, the old certificate stays listed until it expires and is no longer used by
+CI or local signing.
 
 ## Self-update (Sparkle)
 
