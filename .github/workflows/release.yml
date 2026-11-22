@@ -17,8 +17,8 @@
 #                             (cb2fff29-78dd-46b3-9519-4faff2a64499 for this account).
 #   SPARKLE_ED_PRIVATE_KEY    the Sparkle EdDSA private key, as exported by
 #                               ./vendor/Sparkle/bin/generate_keys -x private-key.txt
-#                             (the file's full contents; it stays secret and is only imported into
-#                             the CI keychain so generate_appcast can sign the update zip).
+#                             (the file's full contents; it stays secret and is passed to
+#                             generate_appcast with --ed-key-file in CI).
 #
 # Secrets are never echoed; they are written to files or piped into security/notarytool directly.
 # The temporary keychain and all secret files are deleted in an always() cleanup step.
@@ -103,9 +103,10 @@ jobs:
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           security default-keychain -s "$keychain"
 
-          # Import the Sparkle EdDSA private key so generate_appcast can sign the update zip.
-          ./vendor/Sparkle/bin/generate_keys -f "$ed_key"
-          rm -f "$ed_key"
+          # Keep the Sparkle EdDSA key as a file and pass it to generate_appcast with
+          # --ed-key-file. Importing it into the temporary keychain can make generate_appcast
+          # wait for an approval prompt that no one can answer on a runner.
+          echo "LUMEN_SPARKLE_KEY_FILE=$ed_key" >> "$GITHUB_ENV"
 
           # Sanity check: the Developer ID identity is now visible to codesign.
           security find-identity -v -p codesigning "$keychain"

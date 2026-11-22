@@ -18,8 +18,9 @@
 # generated last, over the final stapled zip, so edSignature and length match the published bytes.
 #
 # Sparkle update flow (zip is the enclosure, DMG stays the human/website download):
-#   - generate_appcast signs the zip with the private EdDSA key from the login keychain and writes
-#     appcast.xml at the repo root. The key is never printed; only the signature lands in the feed.
+#   - generate_appcast signs the zip with the private EdDSA key from LUMEN_SPARKLE_KEY_FILE when
+#     set (CI), otherwise from the login keychain. The key is never printed; only the signature
+#     lands in the feed.
 #   - enclosure URLs are templated to the GitHub Releases download path for the tag, so the feed is
 #     correct before the artefacts are uploaded. Uploading to GitHub is NOT automated here.
 # Environment: LUMEN_RELEASE_TAG (default v$version), LUMEN_RELEASE_OWNER/REPO for the download URL.
@@ -160,9 +161,9 @@ fi
 # --- Sparkle appcast ----------------------------------------------------------------------------
 # Run generate_appcast over a directory holding only the update zip so the DMG and the two .app
 # bundles in dist/ are not treated as update archives. It signs the zip with the private EdDSA key
-# from the login keychain and templates the enclosure URL to the GitHub Releases download path.
-# This runs LAST, over the final (stapled, when notarised) zip, so edSignature and length match
-# the published bytes.
+# from LUMEN_SPARKLE_KEY_FILE when set (CI), otherwise from the login keychain, and templates the
+# enclosure URL to the GitHub Releases download path. This runs LAST, over the final (stapled, when
+# notarised) zip, so edSignature and length match the published bytes.
 vendor_sparkle="$root/vendor/Sparkle"
 if [[ ! -x "$vendor_sparkle/bin/generate_appcast" ]]; then
   echo "error: generate_appcast missing; run scripts/dev/fetch-sparkle.sh first" >&2
@@ -176,10 +177,18 @@ cp "$zip" "$appcast_src/"
 # Carry an existing feed forward so older items are preserved and re-signed as needed.
 [[ -f "$root/appcast.xml" ]] && cp "$root/appcast.xml" "$appcast_src/appcast.xml"
 
-"$vendor_sparkle/bin/generate_appcast" \
-  --download-url-prefix "$download_url_prefix" \
-  --link "https://github.com/${release_owner}/${release_repo}" \
-  "$appcast_src"
+if [[ -n "${LUMEN_SPARKLE_KEY_FILE:-}" ]]; then
+  "$vendor_sparkle/bin/generate_appcast" \
+    --ed-key-file "$LUMEN_SPARKLE_KEY_FILE" \
+    --download-url-prefix "$download_url_prefix" \
+    --link "https://github.com/${release_owner}/${release_repo}" \
+    "$appcast_src"
+else
+  "$vendor_sparkle/bin/generate_appcast" \
+    --download-url-prefix "$download_url_prefix" \
+    --link "https://github.com/${release_owner}/${release_repo}" \
+    "$appcast_src"
+fi
 
 cp "$appcast_src/appcast.xml" "$root/appcast.xml"
 echo
