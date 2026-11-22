@@ -4,6 +4,15 @@
         <title>Lumen</title>
         <item>
             <title>0.1.8</title>
+            <pubDate>Sun, 22 Nov 2026 03:25:54 +0000</pubDate>
+            <link>https://github.com/raidel-a/lumen</link>
+            <sparkle:version>91</sparkle:version>
+            <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.8/Lumen-0.1.8.zip" length="4661385" type="application/octet-stream" sparkle:edSignature="KwCKqFa+ul++su9lIOtC6YZSvYAOmOQ9Qwl9t+K4JNqsi1pAJ3xR/TcW72h5TkO8L3+xWyuJr/nKdWvRp1VBCg=="/>
+        </item>
+        <item>
+            <title>0.1.8</title>
             <pubDate>Sun, 22 Nov 2026 03:14:19 +0000</pubDate>
             <link>https://github.com/raidel-a/lumen</link>
             <sparkle:version>89</sparkle:version>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.8/Lumen-0.1.8.zip" length="4740559" type="application/octet-stream" sparkle:edSignature="At/DJNFT8pQx6h5oLvIn70OKZ4qh467xvSQGhr9GIjeihM2q8LrkqsC13busS+7M0KSjm7wMgz06VPcZuYPDCQ=="/>
-        </item>
-        <item>
-            <title>0.1.7</title>
-            <pubDate>Sat, 21 Nov 2026 18:57:03 -0500</pubDate>
-            <link>https://github.com/raidel-a/lumen</link>
-            <sparkle:version>84</sparkle:version>
-            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.7/Lumen-0.1.7.zip" length="4727881" type="application/octet-stream" sparkle:edSignature="0A2TfzmVwPe+7v5Gc5BG/dUDCyyBEndCUEmWaAi/DTCUt0PKdRRn75s/AQ2/rxiaeF7H0uu0m5fO3hqeG/vOCg=="/>
         </item>
     </channel>
 </rss>
