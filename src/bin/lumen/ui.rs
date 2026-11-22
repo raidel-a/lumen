@@ -2009,8 +2009,8 @@ pub fn init() -> Retained<Actions> {
             Some(objc2_app_kit::NSWorkspaceSessionDidResignActiveNotification),
             None,
         );
-        // macOS posts this when the Accessibility list changes. It is how FineTune notices a
-        // grant without asking the user to toggle anything a second time.
+        // macOS posts this when the Accessibility list changes. It lets a grant take effect
+        // without asking the user to toggle anything a second time.
         let accessibility_changed = NSString::from_str("com.apple.accessibility.api");
         NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
             &actions,

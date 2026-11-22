@@ -200,8 +200,9 @@ unsafe impl objc2::encode::RefEncode for CGEventOpaque {
 }
 
 #[allow(non_upper_case_globals)]
-/// Media keys are intercepted at the HID tap, the same place FineTune uses. A session tap can
-/// come up installed but inert after an Accessibility grant; the HID tap is the standard path.
+/// Media keys are intercepted at the HID tap, the standard place media-key utilities hook. A
+/// session tap can come up installed but inert after an Accessibility grant; the HID tap is the
+/// standard path.
 const kCGHIDEventTap: u32 = 0;
 #[allow(non_upper_case_globals)]
 const kCGHeadInsertEventTap: u32 = 0;
@@ -475,7 +476,7 @@ pub fn retry() {
     refresh();
 }
 
-/// Reconciles after the Accessibility list changes, debounced like FineTune's 250 ms observer.
+/// Reconciles after the Accessibility list changes, debounced by 250 ms.
 pub fn schedule_refresh() {
     let generation = REFRESH_GEN.with(|current| {
         let next = current.get() + 1;

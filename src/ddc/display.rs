@@ -54,7 +54,7 @@ impl std::error::Error for DdcError {}
 /// Which I2C data address a DDC packet is sent to.
 ///
 /// Some LG firmware only honors input switching when the packet goes to `0x50` instead of the
-/// standard `0x51`. That is the "LG alt" mode BetterDisplay and m1ddc expose.
+/// standard `0x51`. That is the "LG alt" mode some DDC tools use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DataAddress {
     Host,

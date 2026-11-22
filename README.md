@@ -1,7 +1,7 @@
 # Lumen
 
 A macOS menu bar display controller: native status item, native AppKit settings window. Built as
-the start of an open BetterDisplay-style tool. First job: switching a monitor between the Mac and
+an open menu bar display-control tool. First job: switching a monitor between the Mac and
 another machine.
 
 ```
@@ -351,7 +351,7 @@ is off by default and lives under **Settings > General > Brightness Keys**.
   write coalescing as the menu sliders, so holding a key ramps smoothly.
 - **Step** sets how far one press moves brightness: Coarse (1/8 of the range), Normal (1/16,
   matching macOS) or Fine (1/32).
-- **Indicator** chooses the HUD look, matching FineTune's two styles:
+- **Indicator** chooses the HUD look, with two styles:
   - **Tahoe** - a 300x72 rounded pill in the top-right corner with a "Brightness" title, a sun
     glyph, a capsule level bar and the percentage.
   - **Classic** - a 200x200 pre-Tahoe panel centred near the bottom with a large sun glyph above a
@@ -364,7 +364,8 @@ is off by default and lives under **Settings > General > Brightness Keys**.
   the system to handle. Lumen does not silently redirect the keys to another display.
 
 On macOS 26 and earlier the tap needs **Accessibility** permission. On macOS 27 the permission is
-the **System & App Protection Override** under Privacy & Security, the same grant FineTune uses.
+the **System & App Protection Override** under Privacy & Security, the same grant input-intercepting
+utilities use.
 That grant is broad: it allows full data, photo, history, Mac-control and input access. Lumen does
 not trigger the override prompt and does not request it from the toggle. To use F1/F2, grant it
 yourself in System Settings > Privacy & Security; otherwise the toggle shows a note and the keys

@@ -1,7 +1,7 @@
 //! The on-screen brightness indicator.
 //!
-//! A single reusable borderless floating panel modelled on FineTune's volume HUD
-//! (`FineTune/Views/HUD`). Two styles, selectable in Settings:
+//! A single reusable borderless floating panel modelled on a reference volume HUD. Two styles,
+//! selectable in Settings:
 //!
 //! - **Tahoe**: a 300x72 rounded pill in the top-right corner, with a "Brightness" title row and a
 //!   row of `[sun glyph] [capsule progress bar] [percentage]`.
@@ -9,7 +9,7 @@
 //!   a row of sixteen square tiles that fill left to right. No percentage.
 //!
 //! Both use the system `.regularMaterial`-equivalent (`NSVisualEffectMaterial::HudWindow` here) with
-//! a one-point `hudBorder` stroke (appearance-aware: white @ 0.08 dark, black @ 0.15 light), a
+//! a one-point border stroke (appearance-aware: white @ 0.08 dark, black @ 0.15 light), a
 //! non-activating floating panel, no shadow, and a short fade. The panel is rebuilt when the style
 //! changes because the two layouts differ in size and subviews.
 //!
@@ -29,7 +29,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSArray, NSPoint, NSRect, NSSize, NSString, NSTimer};
 use std::cell::RefCell;
 
-// Shared timing, matching FineTune (fade-in 0.12s, fade-out 0.11s, hide after 1100 ms).
+// Shared timing for the fade and hold.
 const FADE_IN: f64 = 0.12;
 const FADE_OUT: f64 = 0.11;
 const HOLD_SECONDS: f64 = 1.1;
@@ -48,9 +48,9 @@ const TAHOE_BAR_HEIGHT: f64 = 4.0;
 const CLASSIC_SIZE: f64 = 200.0;
 const CLASSIC_CORNER: f64 = 16.0;
 const CLASSIC_BOTTOM_INSET: f64 = 140.0;
-/// Glyph box side. Larger than FineTune's nominal 80 pt because the `sun.max.fill` symbol fills a
-/// smaller fraction of its bounding box than the speaker glyph; a 94 pt box renders the sun at the
-/// ~49 pt height the reference speaker occupies.
+/// Glyph box side. Larger than the reference's nominal 80 pt because the `sun.max.fill` symbol
+/// fills a smaller fraction of its bounding box than the reference glyph; a 94 pt box renders the
+/// sun at the ~49 pt height the reference occupies.
 const CLASSIC_ICON: f64 = 94.0;
 /// Point size for the Classic glyph, kept equal to the box so proportional scaling fills it.
 const CLASSIC_ICON_POINT: f64 = 94.0;
@@ -59,12 +59,12 @@ const CLASSIC_TILE: f64 = 7.5;
 const CLASSIC_TILE_SPACING: f64 = 2.0;
 /// Vertical positions of the glyph and tile row, in AppKit's bottom-left coordinate space.
 ///
-/// FineTune's `ClassicStyleHUD` nests fixed-height sections (icon 100 pt, tiles 80 pt) whose
-/// content overflows and re-centres in SwiftUI in a way that is not obvious from the source, so the
+/// The reference HUD nests fixed-height sections (icon 100 pt, tiles 80 pt) whose content
+/// overflows and re-centres in SwiftUI in a way that is not obvious from the source, so the
 /// literal "10 pt margin + 56 pt spacer" arithmetic underestimates the spread. These two values are
-/// measured from FineTune's rendered Classic HUD (a 200 pt panel; the reference capture put the
-/// glyph top ~59 pt and the tile-row centre ~166 pt below the top edge) and reproduce it 1:1:
-/// the glyph sits higher and the tiles sit lower, with a wider gap between them.
+/// measured from the reference render (a 200 pt panel; the capture put the glyph top ~59 pt and the
+/// tile-row centre ~166 pt below the top edge) and reproduce it 1:1: the glyph sits higher and the
+/// tiles sit lower, with a wider gap between them.
 ///
 /// Glyph box bottom in AppKit's bottom-left space. The reference puts the glyph's optical centre
 /// ~87 pt below the top edge, i.e. AppKit Y centre 113; with a 94 pt box that is a bottom of
@@ -72,7 +72,7 @@ const CLASSIC_TILE_SPACING: f64 = 2.0;
 const CLASSIC_GLYPH_Y: f64 = 66.0;
 /// Tile bottom: row centre ~166 pt from the top edge -> 200 - 166 - 7.5/2 ≈ 27.
 const CLASSIC_TILE_Y: f64 = 27.0;
-/// FineTune's `hudTileActive` / `hudTileInactive` tokens: white at these alphas in the dark HUD.
+/// The reference HUD's active and inactive tile alphas: white at these levels in the dark HUD.
 const TILE_ACTIVE_ALPHA: f64 = 0.7;
 const TILE_INACTIVE_ALPHA: f64 = 0.2;
 
@@ -99,7 +99,7 @@ pub fn hud_spec(value: u16, max: u16, controllable: bool) -> HudSpec {
     }
 }
 
-/// How many of the Classic HUD's tiles are filled for a fraction, rounded like FineTune.
+/// How many of the Classic HUD's tiles are filled for a fraction, rounded like the reference.
 pub fn filled_tiles(fraction: f64, tiles: usize) -> usize {
     let fraction = fraction.clamp(0.0, 1.0);
     ((fraction * tiles as f64).round() as usize).min(tiles)
@@ -150,7 +150,7 @@ fn hud_fill(alpha: f64) -> Retained<NSColor> {
     }
 }
 
-/// FineTune's `hudBorder` design token: an appearance-aware stroke that resolves to white @ 0.08
+/// The reference HUD's border token: an appearance-aware stroke that resolves to white @ 0.08
 /// in dark mode and black @ 0.15 in light mode. Returned as a dynamic `NSColor` so the border
 /// tracks the panel's effective appearance.
 fn hud_border() -> Retained<NSColor> {
@@ -256,7 +256,8 @@ impl Hud {
             ) {
                 self.glyph.setImage(Some(&image));
             }
-            // FineTune tints the glyph with `hudTileActive` (.primary @ 0.7), not full white.
+            // The reference tints the glyph with the active tile alpha (.primary @ 0.7), not full
+            // white.
             let tint = if controllable {
                 hud_fill(TILE_ACTIVE_ALPHA)
             } else {
@@ -381,7 +382,7 @@ fn rounded_mask(size: NSSize, corner: f64) -> Retained<NSImage> {
 }
 
 /// A borderless, non-activating floating panel with a frosted rounded content view and a
-/// one-point separator border, matching FineTune's panel.
+/// one-point separator border, matching the reference panel.
 fn make_window(size: NSSize, corner: f64) -> (Retained<NSWindow>, Retained<NSVisualEffectView>) {
     unsafe {
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), size);
@@ -417,9 +418,9 @@ fn make_window(size: NSSize, corner: f64) -> (Retained<NSWindow>, Retained<NSVis
         effect.setMaskImage(Some(&rounded_mask(size, corner)));
         window.setContentView(Some(&effect));
 
-        // A one-point hudBorder stroke around the rounded rect, drawn as a borderless box since
-        // `CALayer::setBorderColor:` is not in these bindings. FineTune uses the same hudBorder
-        // token for both the Tahoe and Classic panels, so this is shared.
+        // A one-point border stroke around the rounded rect, drawn as a borderless box since
+        // `CALayer::setBorderColor:` is not in these bindings. The same border token is used for
+        // both the Tahoe and Classic panels, so this is shared.
         let border = NSBox::initWithFrame(mtm().alloc(), frame);
         border.setBoxType(NSBoxType::NSBoxCustom);
         border.setFillColor(&NSColor::clearColor());
@@ -444,8 +445,7 @@ fn make_glyph(point_size: f64, box_frame: NSRect) -> Retained<NSImageView> {
         glyph.setFrame(box_frame);
         glyph.setImageScaling(NSImageScaling::NSImageScaleProportionallyUpOrDown);
         glyph.setContentTintColor(Some(&hud_fill(TILE_ACTIVE_ALPHA)));
-        // Point size + weight only, no scale: FineTune uses `.font(.system(size:weight:))`, so a
-        // `.large` symbol scale would oversize the glyph.
+        // Point size + weight only, no scale: a `.large` symbol scale would oversize the glyph.
         let config = NSImageSymbolConfiguration::configurationWithPointSize_weight(
             point_size,
             NSFontWeightMedium,
@@ -555,8 +555,8 @@ fn build_classic() -> Hud {
         let size = NSSize::new(CLASSIC_SIZE, CLASSIC_SIZE);
         let (window, effect) = make_window(size, CLASSIC_CORNER);
 
-        // Large sun glyph in the upper portion, positioned to match FineTune's rendered Classic
-        // HUD (glyph sits high). CLASSIC_GLYPH_Y is the box bottom in AppKit's bottom-left space.
+        // Large sun glyph in the upper portion, positioned to match the reference render (glyph
+        // sits high). CLASSIC_GLYPH_Y is the box bottom in AppKit's bottom-left space.
         let glyph = make_glyph(
             CLASSIC_ICON_POINT,
             NSRect::new(
@@ -566,8 +566,8 @@ fn build_classic() -> Hud {
         );
         effect.addSubview(&glyph);
 
-        // Sixteen square tiles, centred horizontally, sitting low near the bottom to match
-        // FineTune's rendered Classic HUD. CLASSIC_TILE_Y is the tile bottom in AppKit space.
+        // Sixteen square tiles, centred horizontally, sitting low near the bottom to match the
+        // reference render. CLASSIC_TILE_Y is the tile bottom in AppKit space.
         let row_width =
             CLASSIC_TILES as f64 * CLASSIC_TILE + (CLASSIC_TILES as f64 - 1.0) * CLASSIC_TILE_SPACING;
         let start_x = (CLASSIC_SIZE - row_width) / 2.0;
@@ -597,7 +597,7 @@ fn build_classic() -> Hud {
 }
 
 /// Positions the panel on the screen under the pointer: Tahoe top-right, Classic bottom-centre,
-/// each inset like FineTune.
+/// each inset like the reference.
 fn place(window: &NSWindow, style: HudStyle) {
     unsafe {
         let mouse = objc2_app_kit::NSEvent::mouseLocation();
@@ -640,8 +640,8 @@ mod tests {
     use super::{filled_tiles, hud_spec, CLASSIC_GLYPH_Y, CLASSIC_TILE_Y};
 
     #[test]
-    fn classic_geometry_matches_finetune_render() {
-        // Measured from FineTune's rendered Classic HUD (200 pt panel): glyph optical centre
+    fn classic_geometry_matches_reference_render() {
+        // Measured from the reference render (200 pt panel): glyph optical centre
         // ~87 pt below the top edge (AppKit centre 113; 94 pt box -> bottom 66), tiles low with a
         // bottom of 27. The glyph must sit clearly above the tiles.
         assert!((CLASSIC_GLYPH_Y - 66.0).abs() < 1e-9);
