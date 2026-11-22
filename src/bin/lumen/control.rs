@@ -261,6 +261,34 @@ fn handle(line: &str) -> String {
             });
             ok_value(json!({ "shown": p }))
         }
+        "debug.hotkeys" => match on_main_value(|| {
+            json!({
+                "status": format!("{:?}", crate::hotkeys::status()),
+                "trusted": crate::hotkeys::permission::trusted(),
+                "enabled": crate::with_model(|model| model.config.brightness_keys_enabled),
+                "hud_style": format!("{:?}", crate::with_model(|model| model.config.hud_style)),
+                "support": crate::config::Config::support_dir().display().to_string(),
+            })
+        }) {
+            Ok(value) => ok_value(value),
+            Err(message) => error(message),
+        },
+        "debug.config" => {
+            let path = crate::config::Config::path();
+            let text = std::fs::read_to_string(&path);
+            let parse = text
+                .as_ref()
+                .ok()
+                .and_then(|text| serde_json::from_str::<crate::config::Config>(text).ok());
+            ok_value(json!({
+                "path": path.display().to_string(),
+                "read": text.is_ok(),
+                "read_error": text.as_ref().err().map(|error| error.to_string()),
+                "parsed": parse.is_some(),
+                "hud_style": parse.as_ref().map(|config| format!("{:?}", config.hud_style)),
+                "enabled": parse.as_ref().map(|config| config.brightness_keys_enabled),
+            }))
+        }
         other => error(format!("unknown command {other}")),
     }
 }

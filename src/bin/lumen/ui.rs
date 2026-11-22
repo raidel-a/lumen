@@ -33,8 +33,9 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSMutableAttributedString, NSNotification, NSNotificationCenter, NSObject,
-    NSObjectProtocol, NSPoint, NSRange, NSRect, NSSize, NSString,
+    MainThreadMarker, NSArray, NSDistributedNotificationCenter, NSMutableAttributedString,
+    NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSPoint, NSRange, NSRect,
+    NSSize, NSString,
 };
 use std::cell::RefCell;
 
@@ -117,7 +118,6 @@ pub struct Ui {
     display_list: Option<Retained<NSTableView>>,
     suppress_selection: bool,
     login_note: Option<String>,
-    brightness_keys_note: Option<String>,
     brightness_value: Option<Retained<NSTextField>>,
     contrast_value: Option<Retained<NSTextField>>,
     volume_value: Option<Retained<NSTextField>>,
@@ -151,7 +151,6 @@ impl Default for Ui {
             display_list: None,
             suppress_selection: false,
             login_note: None,
-            brightness_keys_note: None,
             brightness_value: None,
             contrast_value: None,
             volume_value: None,
@@ -808,7 +807,7 @@ unsafe fn build_general(host: &NSView, model: &Model, theme: &Theme) {
         crate::config::HudStyle::Tahoe => 0,
         crate::config::HudStyle::Classic => 1,
     };
-    let keys = group_container(theme, vec![
+    let mut key_rows = vec![
         row_toggle(
             theme,
             "Use the brightness keys",
@@ -832,11 +831,36 @@ unsafe fn build_general(host: &NSView, model: &Model, theme: &Theme) {
             style_index,
             sel!(hudStyle:),
         ),
-    ]);
+    ];
+    let mut blocked_note: Option<&str> = None;
+    if model.config.brightness_keys_enabled {
+        if !crate::hotkeys::permission::trusted() {
+            blocked_note = Some(
+                "macOS 27 routes the brightness-key permission through System & App Protection \
+                 Override, which grants full data, photo, history, control and input access. \
+                 Lumen does not request it automatically. To use F1/F2, grant it manually in \
+                 System Settings > Privacy & Security; otherwise use the menu sliders.",
+            );
+        } else if crate::hotkeys::status() == crate::hotkeys::Status::Offline {
+            key_rows.push(row_text_button(
+                theme,
+                "Media keys offline",
+                "The system disabled Lumen's key tap. Retry to reinstall it.",
+                "Retry",
+                sel!(retryBrightnessKeys:),
+            ));
+        }
+    }
+    let keys = group_container(theme, key_rows);
     hug_height(&keys);
     stack.addArrangedSubview(&keys);
-    if let Some(note) = UI.with(|ui| ui.borrow().brightness_keys_note.clone()) {
-        let note = paragraph_row(&note, 11.0, &theme.secondary, host.bounds().size.width - MARGIN * 2.0);
+    if let Some(note) = blocked_note {
+        let note = paragraph_row(
+            note,
+            11.0,
+            &theme.secondary,
+            host.bounds().size.width - MARGIN * 2.0,
+        );
         stack.setCustomSpacing_afterView(8.0, &keys);
         stack.addArrangedSubview(&note);
         stack.setCustomSpacing_afterView(24.0, &note);
@@ -1971,6 +1995,27 @@ pub fn init() -> Retained<Actions> {
             &actions,
             sel!(didWake:),
             Some(objc2_app_kit::NSWorkspaceDidWakeNotification),
+            None,
+        );
+        NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+            &actions,
+            sel!(sessionActive:),
+            Some(objc2_app_kit::NSWorkspaceSessionDidBecomeActiveNotification),
+            None,
+        );
+        NSWorkspace::sharedWorkspace().notificationCenter().addObserver_selector_name_object(
+            &actions,
+            sel!(sessionResign:),
+            Some(objc2_app_kit::NSWorkspaceSessionDidResignActiveNotification),
+            None,
+        );
+        // macOS posts this when the Accessibility list changes. It is how FineTune notices a
+        // grant without asking the user to toggle anything a second time.
+        let accessibility_changed = NSString::from_str("com.apple.accessibility.api");
+        NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+            &actions,
+            sel!(accessibilityChanged:),
+            Some(&accessibility_changed),
             None,
         );
     }
@@ -3136,7 +3181,29 @@ declare_class!(
 
         #[method(didWake:)]
         fn did_wake(&self, _notification: *mut AnyObject) {
+            crate::hotkeys::wake();
             crate::schedule_rescan();
+        }
+
+        #[method(sessionActive:)]
+        fn session_active(&self, _notification: *mut AnyObject) {
+            crate::hotkeys::wake();
+        }
+
+        #[method(sessionResign:)]
+        fn session_resign(&self, _notification: *mut AnyObject) {
+            crate::hotkeys::suspend();
+        }
+
+        #[method(accessibilityChanged:)]
+        fn accessibility_changed(&self, _notification: *mut AnyObject) {
+            crate::hotkeys::schedule_refresh();
+        }
+
+        #[method(retryBrightnessKeys:)]
+        fn retry_brightness_keys(&self, _sender: *mut AnyObject) {
+            crate::hotkeys::retry();
+            crate::after_change();
         }
 
         #[method(refreshDisplays:)]
@@ -3168,25 +3235,11 @@ declare_class!(
         #[method(toggleBrightnessKeys:)]
         fn toggle_brightness_keys(&self, _sender: *mut AnyObject) {
             let turning_on = !crate::with_model(|model| model.config.brightness_keys_enabled);
-            let mut note: Option<String> = None;
-            if turning_on {
-                // Ask for Accessibility permission; the tap only works once granted.
-                if !crate::hotkeys::permission::prompt() {
-                    note = Some(
-                        "Allow Lumen under System Settings > Privacy & Security > Accessibility, \
-                         then toggle this on again."
-                            .to_string(),
-                    );
-                }
-            }
             crate::with_model(|model| {
                 model.config.brightness_keys_enabled = turning_on;
                 model.config.save();
             });
-            // Install or remove the tap to match the new state (a no-op when permission is
-            // missing, since install checks trust).
             crate::hotkeys::refresh();
-            UI.with(|ui| ui.borrow_mut().brightness_keys_note = note);
             crate::after_change();
         }
 

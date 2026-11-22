@@ -21,7 +21,7 @@ use objc2::rc::Retained;
 use objc2::{msg_send, sel};
 use objc2_app_kit::{
     NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType, NSBox, NSBoxType, NSColor, NSFont,
-    NSFontWeightMedium, NSFontWeightSemibold, NSFloatingWindowLevel, NSImage, NSImageScaling,
+    NSFontWeightMedium, NSFontWeightSemibold, NSScreenSaverWindowLevel, NSImage, NSImageScaling,
     NSImageSymbolConfiguration, NSImageView, NSScreen, NSTextAlignment, NSTextField,
     NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask,
@@ -396,14 +396,14 @@ fn make_window(size: NSSize, corner: f64) -> (Retained<NSWindow>, Retained<NSVis
         window.setBackgroundColor(Some(&NSColor::clearColor()));
         window.setOpaque(false);
         window.setHasShadow(false);
-        window.setLevel(NSFloatingWindowLevel);
+        window.setLevel(NSScreenSaverWindowLevel);
         window.setIgnoresMouseEvents(true);
         window.setHidesOnDeactivate(false);
         window.setAlphaValue(0.0);
         window.setCollectionBehavior(
             NSWindowCollectionBehavior::CanJoinAllSpaces
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::Transient
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
 

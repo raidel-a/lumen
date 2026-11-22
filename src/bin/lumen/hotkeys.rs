@@ -12,35 +12,17 @@ use crate::config::BrightnessStep;
 
 /// Accessibility (Input Monitoring) permission, required for the event tap.
 ///
-/// `AXIsProcessTrusted` and `AXIsProcessTrustedWithOptions` live in ApplicationServices, which the
-/// AppKit frameworks already pull in, so they are declared directly rather than `dlopen`ed.
+/// `AXIsProcessTrusted` lives in ApplicationServices, which the AppKit frameworks already pull
+/// in, so it is declared directly rather than `dlopen`ed.
 pub mod permission {
-    use core_foundation::base::{CFTypeRef, TCFType};
-    use core_foundation::boolean::CFBoolean;
-    use core_foundation::dictionary::CFDictionary;
-    use core_foundation::string::{CFString, CFStringRef};
-
     #[link(name = "ApplicationServices", kind = "framework")]
     unsafe extern "C" {
         fn AXIsProcessTrusted() -> bool;
-        fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
-        static kAXTrustedCheckOptionPrompt: CFStringRef;
     }
 
     /// Whether this process already holds Accessibility permission.
     pub fn trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
-    }
-
-    /// Checks permission and, when missing, asks macOS to show the system prompt. Returns the
-    /// current trust state (the prompt is asynchronous, so a fresh grant is not reflected at once).
-    pub fn prompt() -> bool {
-        unsafe {
-            let key = CFString::wrap_under_get_rule(kAXTrustedCheckOptionPrompt);
-            let value = CFBoolean::true_value();
-            let options = CFDictionary::from_CFType_pairs(&[(key, value)]);
-            AXIsProcessTrustedWithOptions(options.as_concrete_TypeRef() as CFTypeRef)
-        }
     }
 }
 
@@ -156,15 +138,21 @@ fn display_under_pointer() -> Option<u32> {
 /// HUD and changes nothing.
 pub fn apply_brightness_step(up: bool) {
     let Some(id) = display_under_pointer() else {
+        crate::log::trace("brightness keys: no display under the pointer");
         return;
     };
     let step = crate::with_model(|model| model.config.brightness_step);
     let display = crate::with_model(|model| model.display(id).cloned());
     let Some(display) = display else {
+        crate::log::trace(format!("brightness keys: display {id} is not in the model"));
         return;
     };
     let builtin_can_change = display.builtin && crate::brightness::can_change(id);
     let target = resolve_target(&display, builtin_can_change);
+    crate::log::trace(format!(
+        "brightness keys: target display={id} value={} max={} controllable={}",
+        target.value, target.max, target.controllable
+    ));
 
     if !target.controllable {
         crate::hud::show(target.value, target.max, false);
@@ -187,8 +175,9 @@ pub fn apply_brightness_step(up: bool) {
 
 use core_foundation::base::{CFRelease, TCFType};
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop, CFRunLoopSource};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 
 type CGEventRef = *mut CGEventOpaque;
 type CGEventTapProxy = *const c_void;
@@ -211,7 +200,9 @@ unsafe impl objc2::encode::RefEncode for CGEventOpaque {
 }
 
 #[allow(non_upper_case_globals)]
-const kCGSessionEventTap: u32 = 1;
+/// Media keys are intercepted at the HID tap, the same place FineTune uses. A session tap can
+/// come up installed but inert after an Accessibility grant; the HID tap is the standard path.
+const kCGHIDEventTap: u32 = 0;
 #[allow(non_upper_case_globals)]
 const kCGHeadInsertEventTap: u32 = 0;
 /// NSSystemDefined is CGEvent type 14.
@@ -232,6 +223,7 @@ unsafe extern "C" {
         user_info: *mut c_void,
     ) -> CFMachPortRef;
     fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+    fn CGEventTapIsEnabled(tap: CFMachPortRef) -> bool;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -259,8 +251,44 @@ impl Drop for Tap {
     }
 }
 
+/// What the brightness-key tap is doing right now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Status {
+    /// The feature is turned off in Settings.
+    Off,
+    /// The feature is on but Accessibility has not been granted.
+    NoPermission,
+    /// The tap is installed and enabled.
+    Active,
+    /// The tap was installed but the kernel left it inert or disabled it repeatedly.
+    Offline,
+}
+
 thread_local! {
     static TAP: RefCell<Option<Tap>> = const { RefCell::new(None) };
+    static STATUS: Cell<Status> = const { Cell::new(Status::Off) };
+    /// Bumped whenever the tap is replaced or removed, so stale probes do nothing.
+    static TAP_GEN: Cell<u64> = const { Cell::new(0) };
+    /// Last time the kernel disabled the tap, for the repeated-disable watchdog.
+    static LAST_DISABLE: Cell<Option<Instant>> = const { Cell::new(None) };
+    static REFRESH_GEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The tap's current state, for the Settings status row.
+pub fn status() -> Status {
+    STATUS.with(|status| status.get())
+}
+
+fn set_status(next: Status) {
+    let changed = STATUS.with(|status| {
+        let previous = status.get();
+        status.set(next);
+        previous != next
+    });
+    if changed {
+        crate::log::info(format!("brightness keys: {next:?}"));
+        crate::after_change();
+    }
 }
 
 /// Reads an `NSSystemDefined` CGEvent's brightness direction by wrapping it as an `NSEvent`.
@@ -302,13 +330,37 @@ unsafe extern "C" fn tap_callback(
     event: CGEventRef,
     _user_info: *mut c_void,
 ) -> CGEventRef {
-    // Re-enable the tap if the system disabled it (a slow callback or user input can do this).
+    // The kernel disables a tap when the callback is slow or when user input arrives. Re-enable
+    // once, but a second disable inside five seconds means the tap is not usable: mark it offline
+    // so Settings can offer a Retry, instead of silently doing nothing.
     if event_type == TAP_DISABLED_BY_TIMEOUT || event_type == TAP_DISABLED_BY_USER_INPUT {
+        if !crate::with_model(|model| model.config.brightness_keys_enabled) {
+            return event;
+        }
+        if !permission::trusted() {
+            set_status(Status::NoPermission);
+            crate::on_main(uninstall);
+            return event;
+        }
+        let now = Instant::now();
+        let repeated = LAST_DISABLE.with(|last| {
+            last.get()
+                .map(|at| now.duration_since(at) < Duration::from_secs(5))
+                .unwrap_or(false)
+        });
+        LAST_DISABLE.with(|last| last.set(Some(now)));
+        if repeated {
+            crate::log::warn("brightness keys: tap disabled twice in five seconds; marking offline");
+            set_status(Status::Offline);
+            crate::on_main(uninstall);
+            return event;
+        }
         TAP.with(|slot| {
             if let Some(tap) = slot.borrow().as_ref() {
                 unsafe { CGEventTapEnable(tap.port, true) };
             }
         });
+        set_status(Status::Active);
         return event;
     }
     if event_type != EVENT_TYPE_SYSTEM_DEFINED {
@@ -320,6 +372,7 @@ unsafe extern "C" fn tap_callback(
     let Some(direction) = direction_for_event(event) else {
         return event;
     };
+    crate::log::trace(format!("brightness keys: decoded {direction:?}"));
 
     // Decide whether the target display can be controlled before swallowing the key: an
     // uncontrollable display shows the not-available HUD but lets the event pass through.
@@ -346,19 +399,21 @@ fn pointer_target_controllable() -> bool {
     resolve_target(&display, builtin_can_change).controllable
 }
 
-/// Installs the tap on the current (main) run loop. Idempotent. Does nothing without permission.
+/// Installs the tap on the current (main) run loop. Idempotent.
 fn install() {
     if TAP.with(|slot| slot.borrow().is_some()) {
+        wake();
         return;
     }
     if !permission::trusted() {
         crate::log::trace("brightness keys: Accessibility not granted; tap not installed");
+        set_status(Status::NoPermission);
         return;
     }
     unsafe {
         let mask: u64 = 1u64 << EVENT_TYPE_SYSTEM_DEFINED;
         let port = CGEventTapCreate(
-            kCGSessionEventTap,
+            kCGHIDEventTap,
             kCGHeadInsertEventTap,
             0, // default options: an active tap that can alter or swallow events
             mask,
@@ -367,6 +422,7 @@ fn install() {
         );
         if port.is_null() {
             crate::log::warn("brightness keys: could not create the event tap");
+            set_status(Status::Offline);
             return;
         }
         let source_ref = CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0);
@@ -374,6 +430,7 @@ fn install() {
             CFMachPortInvalidate(port);
             CFRelease(port as *const c_void);
             crate::log::warn("brightness keys: could not create the run-loop source");
+            set_status(Status::Offline);
             return;
         }
         let source = CFRunLoopSource::wrap_under_create_rule(source_ref as _);
@@ -381,11 +438,14 @@ fn install() {
         CGEventTapEnable(port, true);
         TAP.with(|slot| *slot.borrow_mut() = Some(Tap { port, source }));
         crate::log::info("brightness keys: event tap installed");
+        set_status(Status::Active);
+        arm_ghost_probe();
     }
 }
 
 /// Removes the tap if present.
 fn uninstall() {
+    TAP_GEN.with(|generation| generation.set(generation.get() + 1));
     TAP.with(|slot| {
         if slot.borrow_mut().take().is_some() {
             crate::log::info("brightness keys: event tap removed");
@@ -393,15 +453,95 @@ fn uninstall() {
     });
 }
 
-/// Installs or removes the tap to match the current config and permission state. Call on the main
-/// thread at launch and whenever the toggle changes.
+/// Installs or removes the tap to match the current config and permission state.
 pub fn refresh() {
-    let enabled = crate::with_model(|model| model.config.brightness_keys_enabled);
-    if enabled && permission::trusted() {
-        install();
-    } else {
+    if !crate::with_model(|model| model.config.brightness_keys_enabled) {
         uninstall();
+        set_status(Status::Off);
+        return;
     }
+    if !permission::trusted() {
+        uninstall();
+        set_status(Status::NoPermission);
+        return;
+    }
+    install();
+}
+
+/// Reinstalls the tap after the Offline state or a permission change.
+pub fn retry() {
+    uninstall();
+    LAST_DISABLE.with(|last| last.set(None));
+    refresh();
+}
+
+/// Reconciles after the Accessibility list changes, debounced like FineTune's 250 ms observer.
+pub fn schedule_refresh() {
+    let generation = REFRESH_GEN.with(|current| {
+        let next = current.get() + 1;
+        current.set(next);
+        next
+    });
+    dispatch::Queue::main().exec_after(Duration::from_millis(250), move || {
+        if REFRESH_GEN.with(|current| current.get()) == generation {
+            refresh();
+        }
+    });
+}
+
+/// Re-enables the tap after wake or session activation. The kernel leaves a session tap
+/// enabled-but-inert across sleep, so it must be enabled again rather than assumed alive.
+pub fn wake() {
+    if let Some(port) = TAP.with(|slot| slot.borrow().as_ref().map(|tap| tap.port)) {
+        unsafe { CGEventTapEnable(port, true) };
+        LAST_DISABLE.with(|last| last.set(None));
+        set_status(Status::Active);
+        arm_ghost_probe();
+    } else {
+        refresh();
+    }
+}
+
+/// Disables the tap for sleep or session resign. The tap stays installed for a quick re-enable.
+pub fn suspend() {
+    if let Some(port) = TAP.with(|slot| slot.borrow().as_ref().map(|tap| tap.port)) {
+        unsafe { CGEventTapEnable(port, false) };
+    }
+}
+
+/// Prompts are deliberately not offered here. On macOS 27, `AXIsProcessTrustedWithOptions`
+/// and the Accessibility pane are routed to the broad System & App Protection Override, which
+/// grants full data, photo, history, control and input access. A display utility must not ask
+/// for that. The tap is installed only when the narrow permission already exists.
+
+/// A tap can be created and report enabled while the kernel has actually left it inert after a
+/// permission grant. Check once after install and surface the Offline state instead of silently
+/// swallowing keys.
+fn arm_ghost_probe() {
+    let generation = TAP_GEN.with(|current| {
+        let next = current.get() + 1;
+        current.set(next);
+        next
+    });
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1500));
+        crate::on_main(move || {
+            if TAP_GEN.with(|current| current.get()) != generation {
+                return;
+            }
+            let enabled = TAP.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .map(|tap| unsafe { CGEventTapIsEnabled(tap.port) })
+                    .unwrap_or(false)
+            });
+            if !enabled {
+                crate::log::warn("brightness keys: tap installed but disabled; marking offline");
+                set_status(Status::Offline);
+                uninstall();
+            }
+        });
+    });
 }
 
 #[cfg(test)]

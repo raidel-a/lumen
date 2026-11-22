@@ -33,8 +33,9 @@ cargo run --bin lumen          # status item appears immediately
 open dist/Lumen.app
 ```
 
-Requires macOS 27 on Apple silicon. No accessibility or root permissions; Screen Recording is only
-asked for when you capture or preview a display.
+Requires macOS 27 on Apple silicon. No accessibility or root permissions for normal display
+control; Screen Recording is only asked for when you capture or preview a display, and brightness
+keys need the macOS 27 System & App Protection Override, which Lumen does not request automatically.
 
 ## Development
 
@@ -132,9 +133,10 @@ create a new key, re-run `store-credentials`, and update the CI secrets.
 
 The first Developer-ID-signed build changes the app's code signature (new Team ID and certificate).
 macOS keys TCC permissions and the `SMAppService` login item to the signature, so **existing installed
-copies will, once, re-prompt for Screen Recording and Accessibility and re-register the login item**
-after they update to the first Developer-ID build. This is expected and happens only on that one
-transition; subsequent Developer-ID builds keep the grants because the identity is stable.
+copies will, once, re-prompt for Screen Recording and re-register the login item** after they
+update to the first Developer-ID build. If brightness keys are enabled, they also need the macOS 27
+System & App Protection Override again. This is expected and happens only on that one transition;
+subsequent Developer-ID builds keep the grants because the identity is stable.
 
 ### Releasing from CI (GitHub Actions)
 
@@ -361,10 +363,13 @@ is off by default and lives under **Settings > General > Brightness Keys**.
   badge and a dimmed bar (or no filled tiles) - and nothing is changed; the key press is left for
   the system to handle. Lumen does not silently redirect the keys to another display.
 
-The tap needs **Accessibility** permission (Privacy & Security > Accessibility). Turning the toggle
-on triggers the system prompt; if permission is missing the switch shows a note asking you to grant
-it and the tap stays inactive until you do. Permission is keyed to the app's signature, like the
-login item, so a stable signing identity keeps the grant across builds.
+On macOS 26 and earlier the tap needs **Accessibility** permission. On macOS 27 the permission is
+the **System & App Protection Override** under Privacy & Security, the same grant FineTune uses.
+That grant is broad: it allows full data, photo, history, Mac-control and input access. Lumen does
+not trigger the override prompt and does not request it from the toggle. To use F1/F2, grant it
+yourself in System Settings > Privacy & Security; otherwise the toggle shows a note and the keys
+stay with the system. The menu sliders work without any of this. Permission is keyed to the app's
+signature, like the login item, so a stable signing identity keeps the grant across builds.
 
 ## Memory
 
