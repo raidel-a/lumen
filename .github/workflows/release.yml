@@ -103,9 +103,11 @@ jobs:
           security list-keychains -d user -s "$keychain" "${existing_keychains[@]}"
           security default-keychain -s "$keychain"
 
-          # Keep the Sparkle EdDSA key as a file and pass it to generate_appcast with
-          # --ed-key-file. Importing it into the temporary keychain can make generate_appcast
-          # wait for an approval prompt that no one can answer on a runner.
+          # Import the same key so bundle.sh embeds the matching SUPublicEDKey in the app.
+          # Keep the file as well and pass it to generate_appcast with --ed-key-file.
+          # Importing alone is not enough: generate_appcast can wait for a keychain approval
+          # prompt that no one can answer on a runner.
+          ./vendor/Sparkle/bin/generate_keys -f "$ed_key"
           echo "LUMEN_SPARKLE_KEY_FILE=$ed_key" >> "$GITHUB_ENV"
 
           # Sanity check: the Developer ID identity is now visible to codesign.
