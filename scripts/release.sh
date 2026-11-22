@@ -177,6 +177,40 @@ cp "$zip" "$appcast_src/"
 # Carry an existing feed forward so older items are preserved and re-signed as needed.
 [[ -f "$root/appcast.xml" ]] && cp "$root/appcast.xml" "$appcast_src/appcast.xml"
 
+# Rebuilding a tag replaces its release assets in place, so any existing item that points at the
+# same download prefix is stale (old build number, length and signature). Drop those items before
+# generate_appcast adds the fresh one, otherwise every rebuild of a tag leaves a broken duplicate.
+if [[ -f "$appcast_src/appcast.xml" ]]; then
+  python3 - "$appcast_src/appcast.xml" "$download_url_prefix" <<'PY'
+import sys
+
+path, prefix = sys.argv[1], sys.argv[2]
+with open(path, encoding="utf-8") as handle:
+    text = handle.read()
+
+kept = []
+pos = 0
+while True:
+    start = text.find("<item>", pos)
+    if start == -1:
+        kept.append(text[pos:])
+        break
+    end = text.find("</item>", start)
+    if end == -1:
+        kept.append(text[pos:])
+        break
+    end += len("</item>")
+    item = text[start:end]
+    kept.append(text[pos:start])
+    if prefix not in item:
+        kept.append(item)
+    pos = end
+
+with open(path, "w", encoding="utf-8") as handle:
+    handle.write("".join(kept))
+PY
+fi
+
 if [[ -n "${LUMEN_SPARKLE_KEY_FILE:-}" ]]; then
   "$vendor_sparkle/bin/generate_appcast" \
     --ed-key-file "$LUMEN_SPARKLE_KEY_FILE" \
