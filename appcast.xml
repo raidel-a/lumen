@@ -3,6 +3,15 @@
     <channel>
         <title>Lumen</title>
         <item>
+            <title>0.1.8</title>
+            <pubDate>Sat, 21 Nov 2026 20:56:59 -0500</pubDate>
+            <link>https://github.com/raidel-a/lumen</link>
+            <sparkle:version>87</sparkle:version>
+            <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.8/Lumen-0.1.8.zip" length="4740559" type="application/octet-stream" sparkle:edSignature="At/DJNFT8pQx6h5oLvIn70OKZ4qh467xvSQGhr9GIjeihM2q8LrkqsC13busS+7M0KSjm7wMgz06VPcZuYPDCQ=="/>
+        </item>
+        <item>
             <title>0.1.7</title>
             <pubDate>Sat, 21 Nov 2026 18:57:03 -0500</pubDate>
             <link>https://github.com/raidel-a/lumen</link>
@@ -19,15 +28,6 @@
             <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
             <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
             <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.6/Lumen-0.1.6.zip" length="4727963" type="application/octet-stream" sparkle:edSignature="IGG9makMxlbGAZ+tqN9RfKSV4z6TaVFo5BbX9ejb0Ak4xredsRhzA+8W0jCn8MEGHufJc06bsx9RfdNcLIS/Cw=="/>
-        </item>
-        <item>
-            <title>0.1.5</title>
-            <pubDate>Wed, 18 Nov 2026 20:05:32 -0500</pubDate>
-            <link>https://github.com/raidel-a/lumen</link>
-            <sparkle:version>77</sparkle:version>
-            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
-            <sparkle:minimumSystemVersion>27.0</sparkle:minimumSystemVersion>
-            <enclosure url="https://github.com/raidel-a/lumen/releases/download/v0.1.5/Lumen-0.1.5.zip" length="4723952" type="application/octet-stream" sparkle:edSignature="eEODLTrLjMzaMQ+TQmD80WfaKRfkb01pKNK32H3s6ZwFgN20+p2KED4G0chahvOk8lq7q2BwxnqHM/R7KCPsDg=="/>
         </item>
     </channel>
 </rss>
